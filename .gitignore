@@ -1,0 +1,11 @@
+# Generated data and cache directories
+01_rawData/
+04_Processed/
+data/
+RULA_tables/
+
+# Run artifacts
+Project_*.mat
+Results.xlsx
+~$Results.xlsx
+Dentist_db_backup_*.xlsx
