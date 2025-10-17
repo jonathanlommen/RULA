@@ -31,6 +31,7 @@ spmDir = fullfile(scriptsDir, 'spm1dmatlab-master');
 if isfolder(spmDir)
     addpath(genpath(spmDir));
 end
+ensureStandingLegScore(scriptsDir);
 
 % Extract RULA lookup tables if necessary.
 rulaDir = fullfile(repoRoot, 'RULA_tables');
@@ -168,5 +169,31 @@ timestamp = datestr(now, 'yyyymmdd_HHMMSS');
 dest = fullfile(repoRoot, ['Dentist_db_backup_' timestamp '.xlsx']);
 if copyfile(source, dest)
     fprintf('Backed up Dentist_db.xlsx to %s\n', dest);
+end
+end
+
+function ensureStandingLegScore(scriptsDir)
+% Ensure RULA Step 11 assumes unsupported legs (fixed score +2).
+rulaFile = fullfile(scriptsDir, 'RULA_calc_scores.m');
+if ~isfile(rulaFile)
+    return;
+end
+fileText = fileread(rulaFile);
+originalText = fileText;
+oldComment = '% general leg and feet are supported';
+newComment = '% For standing surgeons legs and feet are unsupported -> fixed score +2';
+if contains(fileText, oldComment)
+    fileText = strrep(fileText, oldComment, newComment);
+end
+oldAssign = 'rula.s11_leg_pos.total = ones(size(rula.s1_upper_arm_pos.left.total));';
+newAssign = 'rula.s11_leg_pos.total = 2*ones(size(rula.s1_upper_arm_pos.left.total));';
+if contains(fileText, oldAssign)
+    fileText = strrep(fileText, oldAssign, newAssign);
+end
+if ~isequal(fileText, originalText)
+    fid = fopen(rulaFile, 'w');
+    cleaner = onCleanup(@() fclose(fid));
+    fwrite(fid, fileText);
+    fprintf('Updated Step 11 leg score to +2 in %s\n', rulaFile);
 end
 end
