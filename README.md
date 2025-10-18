@@ -15,7 +15,7 @@ This project processes wearable motion capture recordings to compute Rapid Upper
 ## Required Inputs
 1. XSens MVNX recordings placed in `01_rawData/`.
 2. RULA lookup spreadsheets (`Wrist and Arm Posture Score.xlsx`, `Trunk Posture Score.xlsx`, `Table C.xlsx`) inside `RULA_tables/`.
-3. Optional: `Dentist_db.xlsx` for detailed participant metadata. The automation script can fabricate minimal placeholders if the workbook is absent.
+3. Optional: `Surgeon_db.xlsx` for detailed participant metadata. The automation script can fabricate minimal placeholders if the workbook is absent.
 
 ## Running the Pipeline
 ```matlab
@@ -27,6 +27,14 @@ The script:
 3. Builds a temporary `ConditionTable` and `Subject_db` and runs `MF_02SelectAndRULA`, which loads every trial, filters the data, and calls the RULA routines.
 4. Saves per-trial caches under `04_Processed/`, aggregates statistics with `MF_combine_RULA`, and writes the summary to `Results.xlsx`.
 5. Stores the captured `Settings` struct in `Project_settings.mat` for reproducibility.
+
+To explore the processed data interactively, either pass the `launchVisualizer` flag when running the batch script:
+
+```matlab
+run_all_trials('launchVisualizer', true)
+```
+
+or call `RULA_Visualizer` afterwards to open the GUI.
 
 To execute the older interactive workflow, run `RULA_based_on_IMU_START.m` from MATLAB and follow the prompts.
 
@@ -48,5 +56,6 @@ The per-trial results (`*_processed.mat`) include the full `rula` struct, allowi
 
 ## Next Steps
 - Extend `run_all_trials.m` to export frame-level scores if needed for time-series analysis.
-- Update `Dentist_db.xlsx` with participant metadata prior to a run to retain rich context in the output tables.
+- Update `Surgeon_db.xlsx` with participant metadata prior to a run to retain rich context in the output tables.
+- Use `RULA_Visualizer` to inspect joint-angle time series (with RULA thresholds) and overall score distributions for any processed trial.
 - Version-control new helper scripts by editing files under `skripts/` and updating `skripts.zip`.

@@ -1,4 +1,4 @@
-function run_all_trials()
+function run_all_trials(varargin)
 %RUN_ALL_TRIALS Convert MVNX files and compute RULA scores without Excel metadata.
 %
 %   Place XSens .mvnx recordings in 01_rawData/, ensure skripts.zip is present,
@@ -10,8 +10,31 @@ function run_all_trials()
 %     5. Write Results.xlsx (Sheet "Results_detail") with the aggregated scores.
 %
 %   The function overwrites Project_table.mat, Project_data_v01.mat, and updates
-%   Dentist_db.xlsx in the repository root. A timestamped backup of the Excel
+%   Surgeon_db.xlsx in the repository root. A timestamped backup of the Excel
 %   file is created automatically before writing.
+%
+%   Optional name/value arguments:
+%       'launchVisualizer' (logical, default false) – open the interactive GUI
+%           (RULA_Visualizer) after processing completes.
+
+launchVisualizer = true;
+if ~isempty(varargin)
+    if mod(numel(varargin), 2) ~= 0
+        error('run_all_trials:InvalidArgs', ...
+            'Optional arguments must be supplied as name/value pairs.');
+    end
+    for argIdx = 1:2:numel(varargin)
+        name = lower(string(varargin{argIdx}));
+        value = varargin{argIdx+1};
+        switch name
+            case "launchvisualizer"
+                launchVisualizer = logical(value);
+            otherwise
+                error('run_all_trials:UnknownOption', ...
+                    'Unrecognised option "%s".', varargin{argIdx});
+        end
+    end
+end
 
 repoRoot = fileparts(mfilename('fullpath'));
 
@@ -115,7 +138,7 @@ Subject_db = table(uniqueSubjects(:), repmat({'unknown'}, numel(uniqueSubjects),
 
 % 4) Run the core RULA computation.
 cleanupCaches(repoRoot);
-backupDentistDB(repoRoot);
+backupSurgeonDB(repoRoot);
 
 if exist('MF_02SelectAndRULA_v01', 'file')
     [ConditionTable_loaded, Data, Settings] = MF_02SelectAndRULA_v01( ...
@@ -134,7 +157,7 @@ resultsPath = fullfile(repoRoot, 'Results.xlsx');
 writetable(Summary_table, resultsPath, 'Sheet', 'Results_detail');
 fprintf('Wrote summary to %s\n', resultsPath);
 
-if exist('MF_combine_RULA_hist', 'file')
+if false && exist('MF_combine_RULA_hist', 'file')
     try %#ok<TRYNC>
         MF_combine_RULA_hist(Data, ConditionTable_loaded);
     catch
@@ -146,6 +169,15 @@ save(SettingsPath, 'Settings');
 fprintf('Saved run settings snapshot to %s\n', SettingsPath);
 
 fprintf('RULA processing complete for %d trial(s).\n', nTrials);
+
+if launchVisualizer && exist(fullfile(repoRoot, 'RULA_Visualizer.m'), 'file')
+    try
+        RULA_Visualizer(repoRoot);
+    catch ME
+        warning('run_all_trials:VisualizerFailed', ...
+            'Unable to launch RULA_Visualizer automatically: %s', ME.message);
+    end
+end
 end
 
 function cleanupCaches(repoRoot)
@@ -159,16 +191,16 @@ for ii = 1:numel(caches)
 end
 end
 
-function backupDentistDB(repoRoot)
-% Keep a timestamped copy of Dentist_db.xlsx before MF_02SelectAndRULA updates it.
-source = fullfile(repoRoot, 'Dentist_db.xlsx');
+function backupSurgeonDB(repoRoot)
+% Keep a timestamped copy of Surgeon_db.xlsx before MF_02SelectAndRULA updates it.
+source = fullfile(repoRoot, 'Surgeon_db.xlsx');
 if ~isfile(source)
     return;
 end
 timestamp = datestr(now, 'yyyymmdd_HHMMSS');
-dest = fullfile(repoRoot, ['Dentist_db_backup_' timestamp '.xlsx']);
+dest = fullfile(repoRoot, ['Surgeon_db_backup_' timestamp '.xlsx']);
 if copyfile(source, dest)
-    fprintf('Backed up Dentist_db.xlsx to %s\n', dest);
+    fprintf('Backed up Surgeon_db.xlsx to %s\n', dest);
 end
 end
 
