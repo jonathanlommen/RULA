@@ -253,14 +253,11 @@ onViewChanged();
             ax = uiaxes(plotGrid);
             ax.Layout.Row = dimIdx + 1;
             ax.Layout.Column = 2;
-            dataLine = plot(ax, timeSeconds, jointAngles(:, dimIdx), 'LineWidth', 1.1);
-            dataLine.DisplayName = 'Angle';
             grid(ax, 'on');
+            hold(ax, 'on');
+
             dimName = app.DimensionNames(dimIdx);
             motionLabel = resolveMotionLabel(jointLabel, dimName);
-            if dimIdx == numel(app.DimensionNames)
-                xlabel(ax, 'Time (s)');
-            end
             jointKey = char(jointLabel);
             dimKey = char(dimName);
             boundaryValues = [];
@@ -270,23 +267,48 @@ onViewChanged();
                     boundaryValues = jointThresholds.(dimKey);
                 end
             end
+
+            ySeries = jointAngles(:, dimIdx);
+            [yMin, yMax] = computeYAxisLimits(ySeries, boundaryValues);
+            ylim(ax, [yMin yMax]);
+
+            xSpan = [timeSeconds(1) timeSeconds(end)];
+            if xSpan(1) == xSpan(2)
+                xSpan(2) = xSpan(2) + 1;
+            end
+            [shadeHandles, shadeLabels] = shadeRulaBands(ax, xSpan, [yMin yMax], boundaryValues);
+
+            dataLine = plot(ax, timeSeconds, ySeries, 'LineWidth', 1.1, ...
+                'Color', [0 0.4470 0.7410]);
+            if exist('uistack', 'file')
+                try
+                    uistack(dataLine, 'top');
+                catch
+                end
+            end
+
+            if ~isempty(boundaryValues)
+                for vIdx = 1:numel(boundaryValues)
+                    v = boundaryValues(vIdx);
+                    lineHandle = yline(ax, v, '--r', 'LineWidth', 1);
+                    lineHandle.HandleVisibility = 'off';
+                end
+            end
+
+            hold(ax, 'off');
+
+            if dimIdx == numel(app.DimensionNames)
+                xlabel(ax, 'Time (s)');
+            end
             title(ax, motionLabel, 'Interpreter', 'none', ...
                 'FontWeight', 'normal', 'FontSize', 12);
 
-            % Overlay RULA thresholds when available.
-            if ~isempty(boundaryValues)
-                hold(ax, 'on');
-                thresholdLines = gobjects(numel(boundaryValues), 1);
-                thresholdLabels = cell(numel(boundaryValues), 1);
-                for vIdx = 1:numel(boundaryValues)
-                    v = boundaryValues(vIdx);
-                    thresholdLines(vIdx) = yline(ax, v, '--r', 'LineWidth', 1);
-                    thresholdLines(vIdx).DisplayName = sprintf('Threshold %g°', v);
-                    thresholdLabels{vIdx} = sprintf('Threshold %g°', v);
+            if ~isempty(shadeHandles)
+                leg = legend(ax, shadeHandles, shadeLabels, ...
+                    'Location', 'bestoutside', 'AutoUpdate', 'off');
+                if ~isempty(leg) && isvalid(leg)
+                    leg.Title.String = 'RULA Subscore';
                 end
-                hold(ax, 'off');
-                legend(ax, [dataLine; thresholdLines], ...
-                    [{'Angle'}; thresholdLabels], 'Location', 'best');
             else
                 legend(ax, 'off');
             end
@@ -500,6 +522,74 @@ onViewChanged();
             end
         end
         label = formatDimensionName(dimKey);
+    end
+
+    function [yMin, yMax] = computeYAxisLimits(series, boundaries)
+        values = series(~isnan(series));
+        values = values(:);
+        if ~isempty(boundaries)
+            boundaryVals = boundaries(~isnan(boundaries));
+            values = [values; boundaryVals(:)];
+        end
+        if isempty(values)
+            values = 0;
+        end
+        yMin = min(values);
+        yMax = max(values);
+        if yMin == yMax
+            spread = max(1, abs(yMin) * 0.1 + 1);
+            yMin = yMin - spread;
+            yMax = yMax + spread;
+        else
+            margin = 0.05 * (yMax - yMin);
+            if margin <= 0
+                margin = 1;
+            end
+            yMin = yMin - margin;
+            yMax = yMax + margin;
+        end
+    end
+
+    function [handles, labels] = shadeRulaBands(ax, xSpan, yLimits, boundaries)
+        handles = gobjects(0, 1);
+        labels = {};
+        if nargin < 4 || isempty(boundaries)
+            boundaries = [];
+        else
+            boundaries = sort(unique(boundaries(~isnan(boundaries))));
+        end
+        binEdges = [-inf; boundaries(:); inf];
+        numBands = numel(binEdges) - 1;
+        if numBands < 1
+            numBands = 1;
+            binEdges = [-inf; inf];
+        end
+        greys = linspace(0.9, 0.4, numBands);
+        for idx = 1:numBands
+            lowerBound = binEdges(idx);
+            upperBound = binEdges(idx + 1);
+            yLower = yLimits(1);
+            if isfinite(lowerBound)
+                yLower = lowerBound;
+            end
+            yUpper = yLimits(2);
+            if isfinite(upperBound)
+                yUpper = upperBound;
+            end
+            if yUpper <= yLower
+                continue;
+            end
+            grey = greys(idx);
+            patchHandle = patch(ax, ...
+                [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
+                [yLower yLower yUpper yUpper], ...
+                grey * ones(1, 3), ...
+                'EdgeColor', 'none', ...
+                'FaceAlpha', 0.18, ...
+                'HandleVisibility', 'on');
+            handles(end+1, 1) = patchHandle; %#ok<AGROW>
+            labels{end+1, 1} = sprintf('%d', idx);
+        end
     end
 
     function name = formatDimensionName(dimKey)
