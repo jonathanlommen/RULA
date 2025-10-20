@@ -33,9 +33,8 @@ end
 jointNames = string(Settings.JointNames);
 dimensionNames = string(Settings.Dimensionsjoint);
 jointItems = cellstr(jointNames);
-subjectItems = cellstr(uniqueSubjects);
-
-thresholds = RULA_visualization_thresholds();
+subjectKeys = cellstr(uniqueSubjects);
+subjectLabels = cellfun(@formatSubjectLabel, subjectKeys, 'UniformOutput', false);
 
 app = struct();
 app.RepoRoot = repoRoot;
@@ -44,11 +43,12 @@ app.Settings = Settings;
 app.Data = Data;
 app.JointNames = jointNames;
 app.DimensionNames = dimensionNames;
-app.MotionLabels = buildMotionLabels();
 app.SubjectIDs = subjectIDs;
 app.TrialNames = trialNames;
 app.UniqueSubjects = uniqueSubjects;
+thresholds = RULA_visualization_thresholds();
 app.Thresholds = thresholds;
+app.StepDefinitions = buildStepDefinitions(Settings);
 
 app.Fig = uifigure('Name', 'RULA Visualizer', ...
     'Position', [100 100 1200 720]);
@@ -60,47 +60,72 @@ app.MainGrid = uigridlayout(app.Fig, [1 2], ...
 app.ControlPanel = uipanel(app.MainGrid, 'Title', 'Controls');
 app.ControlPanel.Layout.Row = 1;
 app.ControlPanel.Layout.Column = 1;
-app.ControlGrid = uigridlayout(app.ControlPanel, [9 1], ...
-    'RowHeight', {30,30,30,30,30,30,30,'1x',30}, ...
+app.ControlGrid = uigridlayout(app.ControlPanel, [11 1], ...
+    'RowHeight', {30,30,30,30,30,30,30,30,'1x',30,30}, ...
     'Padding', [10 10 10 10]);
 
-uilabel(app.ControlGrid, 'Text', 'Subject:', ...
+subjectLabel = uilabel(app.ControlGrid, 'Text', 'Subject Selection:', ...
     'HorizontalAlignment', 'left');
+subjectLabel.Layout.Row = 1;
 app.SubjectDropdown = uidropdown(app.ControlGrid, ...
-    'Items', subjectItems, ...
-    'Value', subjectItems{1}, ...
+    'Items', subjectLabels, ...
+    'ItemsData', subjectKeys, ...
+    'Value', subjectKeys{1}, ...
     'ValueChangedFcn', @(src, evt)onSubjectChanged());
+app.SubjectDropdown.Layout.Row = 2;
 
-uilabel(app.ControlGrid, 'Text', 'Trial / File:', ...
+trialLabel = uilabel(app.ControlGrid, 'Text', 'Trial Selection:', ...
     'HorizontalAlignment', 'left');
+trialLabel.Layout.Row = 3;
 app.TrialDropdown = uidropdown(app.ControlGrid, ...
     'Items', {}, ...
+    'ItemsData', {}, ...
     'ValueChangedFcn', @(src, evt)onTrialChanged());
+app.TrialDropdown.Layout.Row = 4;
 
-uilabel(app.ControlGrid, 'Text', 'View:', ...
+viewLabel = uilabel(app.ControlGrid, 'Text', 'View Data:', ...
     'HorizontalAlignment', 'left');
+viewLabel.Layout.Row = 5;
 app.ViewDropdown = uidropdown(app.ControlGrid, ...
     'Items', {'Time Series','Summary Statistics'}, ...
     'Value', 'Time Series', ...
     'ValueChangedFcn', @(src, evt)onViewChanged());
+app.ViewDropdown.Layout.Row = 6;
 
-uilabel(app.ControlGrid, 'Text', 'Joint (time series):', ...
+stepLabel = uilabel(app.ControlGrid, 'Text', 'RULA Step:', ...
     'HorizontalAlignment', 'left');
-app.JointList = uilistbox(app.ControlGrid, ...
-    'Items', jointItems, ...
-    'Value', jointItems{1}, ...
-    'Multiselect', 'off');
-
-app.PlotButton = uibutton(app.ControlGrid, 'Text', 'Generate Plot', ...
-    'ButtonPushedFcn', @(src, evt)onPlotRequested());
-
-app.ExportButton = uibutton(app.ControlGrid, 'Text', 'Save Figure...', ...
-    'ButtonPushedFcn', @(src, evt)onExportFigure());
+stepLabel.Layout.Row = 7;
+stepDefs = app.StepDefinitions;
+stepItems = {stepDefs.Label};
+stepKeys = {stepDefs.Key};
+if isempty(stepKeys)
+    stepItems = {''};
+    stepKeys = {''};
+end
+app.StepDropdown = uidropdown(app.ControlGrid, ...
+    'Items', stepItems, ...
+    'ItemsData', stepKeys, ...
+    'ValueChangedFcn', @(src, evt)onStepChanged());
+app.StepDropdown.Layout.Row = 8;
+if ~isempty(stepKeys) && ~strcmp(stepKeys{1}, '')
+    app.StepDropdown.Value = stepKeys{1};
+else
+    app.StepDropdown.Enable = 'off';
+end
 
 app.MessageLabel = uilabel(app.ControlGrid, ...
     'Text', '', ...
     'HorizontalAlignment', 'left', ...
     'WordWrap', 'on');
+app.MessageLabel.Layout.Row = 9;
+
+app.PlotButton = uibutton(app.ControlGrid, 'Text', 'Generate Plot', ...
+    'ButtonPushedFcn', @(src, evt)onPlotRequested());
+app.PlotButton.Layout.Row = 10;
+
+app.ExportButton = uibutton(app.ControlGrid, 'Text', 'Save Figure...', ...
+    'ButtonPushedFcn', @(src, evt)onExportFigure());
+app.ExportButton.Layout.Row = 11;
 
 % Plot area
 app.PlotPanel = uipanel(app.MainGrid, 'Title', 'Visualization');
@@ -112,19 +137,26 @@ onSubjectChanged();
 onViewChanged();
 
     function onSubjectChanged()
-        subject = string(app.SubjectDropdown.Value);
-        matches = strcmp(app.SubjectIDs, subject);
+        subjectKey = string(app.SubjectDropdown.Value);
+        matches = (app.SubjectIDs == subjectKey);
         trials = unique(app.TrialNames(matches), 'stable');
         if isempty(trials)
             app.TrialDropdown.Items = {};
+            app.TrialDropdown.ItemsData = {};
             app.TrialDropdown.Value = '';
-            showMessage(sprintf('No trials located for subject %s.', subject), true);
-        else
-            trialItems = cellstr(trials);
-            app.TrialDropdown.Items = trialItems;
-            app.TrialDropdown.Value = trialItems{1};
-            showMessage('', false);
+            app.TrialDropdown.Enable = 'off';
+            showMessage(sprintf('No trials located for %s.', formatSubjectLabel(subjectKey)), true);
+            return;
         end
+
+        trialKeys = cellstr(trials);
+        trialLabels = cellfun(@formatTrialLabel, trialKeys, 'UniformOutput', false);
+        app.TrialDropdown.Items = trialLabels;
+        app.TrialDropdown.ItemsData = trialKeys;
+        app.TrialDropdown.Value = trialKeys{1};
+        app.TrialDropdown.Enable = 'on';
+        showMessage('', false);
+        onTrialChanged();
     end
 
     function onTrialChanged()
@@ -134,12 +166,13 @@ onViewChanged();
     function onViewChanged()
         viewType = app.ViewDropdown.Value;
         if strcmp(viewType, 'Time Series')
-            app.JointList.Enable = 'on';
-            if isempty(app.JointList.Value)
-                app.JointList.Value = app.JointList.Items{1};
+            if isvalidControl(app.StepDropdown)
+                app.StepDropdown.Enable = 'on';
             end
         else
-            app.JointList.Enable = 'off';
+            if isvalidControl(app.StepDropdown)
+                app.StepDropdown.Enable = 'off';
+            end
         end
     end
 
@@ -151,13 +184,16 @@ onViewChanged();
         viewType = app.ViewDropdown.Value;
         switch viewType
             case 'Time Series'
-                jointLabel = string(app.JointList.Value);
-                if jointLabel == ""
-                    showMessage('Choose a joint for the time-series view.', true);
+                stepKey = "";
+                if isvalidControl(app.StepDropdown) && strcmp(app.StepDropdown.Enable, 'on')
+                    stepKey = string(app.StepDropdown.Value);
+                end
+                if stepKey == ""
+                    showMessage('Choose a RULA step for the time-series view.', true);
                     return;
                 end
                 try
-                    plotTimeSeries(jointLabel);
+                    plotTimeSeries(stepKey);
                     showMessage('', false);
                 catch ME
                     showMessage(ME.message, true);
@@ -172,12 +208,17 @@ onViewChanged();
         end
     end
 
-    function plotTimeSeries(jointLabel)
-        idxJoint = find(app.JointNames == jointLabel, 1);
-        if isempty(idxJoint)
-            error('RULA_Visualizer:UnknownJoint', ...
-                'Joint %s is not present in Settings.JointNames.', jointLabel);
+    function plotTimeSeries(stepKey)
+        def = getStepDefinition(stepKey);
+        if isempty(def) || ~isfield(def, 'Key')
+            error('RULA_Visualizer:UnknownStep', ...
+                'RULA step "%s" is not available for plotting.', stepKey);
         end
+        if isempty(app.TrialDropdown.Value)
+            error('RULA_Visualizer:NoTrial', ...
+                'Select a trial before generating plots.');
+        end
+
         trialName = string(app.TrialDropdown.Value);
         processedPath = fullfile(app.RepoRoot, '04_Processed', ...
             sprintf('%s_processed.mat', erase(trialName, ".mat")));
@@ -185,133 +226,115 @@ onViewChanged();
             error('RULA_Visualizer:MissingProcessed', ...
                 'Processed file not found: %s', processedPath);
         end
-        loadedTrial = load(processedPath, 'Data_tmp', 'Subject_tmp');
+
+        loadedTrial = load(processedPath, 'Data_tmp', 'Subject_tmp', 'rula');
         if ~isfield(loadedTrial, 'Data_tmp')
             error('RULA_Visualizer:MissingDataTmp', ...
                 'Data_tmp missing in %s. Re-run the pipeline.', processedPath);
         end
-        Data_tmp = loadedTrial.Data_tmp;
-        if isfield(Data_tmp, 'time') && ~isempty(Data_tmp.time)
-            timeSeconds = (double(Data_tmp.time) - double(Data_tmp.time(1))) * 1e-3;
-        elseif isfield(loadedTrial, 'Subject_tmp') && isfield(loadedTrial.Subject_tmp, 'Parameter')
-            fs = loadedTrial.Subject_tmp.Parameter.frameRate;
-            nSamples = size(Data_tmp.jointAngle, 1);
-            timeSeconds = (0:nSamples-1).' / fs;
-        else
-            nSamples = size(Data_tmp.jointAngle, 1);
-            timeSeconds = (0:nSamples-1).';
+        if ~isfield(loadedTrial, 'rula')
+            error('RULA_Visualizer:MissingRula', ...
+                'RULA struct missing in %s. Re-run the pipeline.', processedPath);
         end
 
-        nDims = numel(app.DimensionNames);
-        cols = (idxJoint - 1) * nDims + (1:nDims);
-        jointAngles = Data_tmp.jointAngle(:, cols);
+        Data_tmp = loadedTrial.Data_tmp;
+        if isfield(loadedTrial, 'Subject_tmp')
+            Subject_tmp = loadedTrial.Subject_tmp;
+        else
+            Subject_tmp = struct();
+        end
+        rula = loadedTrial.rula;
+
+        timeSeconds = deriveTimeVector(Data_tmp, Subject_tmp);
+        ctx = struct('Data', Data_tmp, ...
+            'Subject', Subject_tmp, ...
+            'Rula', rula, ...
+            'Settings', app.Settings);
+
+        components = computeStepComponents(def, ctx);
+        if isempty(components)
+            error('RULA_Visualizer:NoComponents', ...
+                'No time-series data are available for %s.', def.Label);
+        end
 
         delete(app.PlotPanel.Children);
-        rowHeights = cell(1, nDims + 1);
-        rowHeights{1} = 40;
-        for rhIdx = 2:numel(rowHeights)
-            rowHeights{rhIdx} = '1x';
-        end
-        colWidths = {42, '1x'};
-        plotGrid = uigridlayout(app.PlotPanel, [nDims + 1 2], ...
-            'RowHeight', rowHeights, ...
-            'ColumnWidth', colWidths, ...
+        plotGrid = uigridlayout(app.PlotPanel, [numel(components) + 1, 1], ...
             'Padding', [10 10 10 10]);
+        rowHeights = [{40}, repmat({'1x'}, 1, numel(components))];
+        plotGrid.RowHeight = rowHeights;
+
         titleLabel = uilabel(plotGrid, ...
-            'Text', char(jointLabel), ...
+            'Text', def.Label, ...
             'FontWeight', 'bold', ...
-            'FontSize', 16, ...
-            'HorizontalAlignment', 'center');
-        titleLabel.Layout.Row = 1;
-        titleLabel.Layout.Column = 2;
-
-        labelAxes = uiaxes(plotGrid);
-        labelAxes.Layout.Row = [2 nDims + 1];
-        labelAxes.Layout.Column = 1;
-        labelAxes.XLim = [0 1];
-        labelAxes.YLim = [0 1];
-        labelAxes.XTick = [];
-        labelAxes.YTick = [];
-        labelAxes.Color = 'none';
-        labelAxes.XColor = 'none';
-        labelAxes.YColor = 'none';
-        labelAxes.Box = 'off';
-        if isprop(labelAxes, 'Toolbar') && ~isempty(labelAxes.Toolbar)
-            labelAxes.Toolbar.Visible = 'off';
-        end
-        if exist('disableDefaultInteractivity', 'file')
-            disableDefaultInteractivity(labelAxes);
-        end
-        text(labelAxes, 0.5, 0.5, 'Degrees (°)', ...
-            'Rotation', 90, ...
             'HorizontalAlignment', 'center', ...
-            'VerticalAlignment', 'middle', ...
-            'FontSize', 12, ...
-            'FontWeight', 'normal');
+            'FontSize', 16);
+        titleLabel.Layout.Row = 1;
+        titleLabel.Layout.Column = 1;
 
-        for dimIdx = 1:nDims
+        for compIdx = 1:numel(components)
+            comp = components(compIdx);
             ax = uiaxes(plotGrid);
-            ax.Layout.Row = dimIdx + 1;
-            ax.Layout.Column = 2;
+            ax.Layout.Row = compIdx + 1;
+            ax.Layout.Column = 1;
             grid(ax, 'on');
             hold(ax, 'on');
 
-            dimName = app.DimensionNames(dimIdx);
-            motionLabel = resolveMotionLabel(jointLabel, dimName);
-            jointKey = char(jointLabel);
-            dimKey = char(dimName);
-            boundaryValues = [];
-            if isfield(app.Thresholds, jointKey)
-                jointThresholds = app.Thresholds.(jointKey);
-                if isfield(jointThresholds, dimKey)
-                    boundaryValues = jointThresholds.(dimKey);
+            yLimits = computeYLimits(comp.values, comp.threshold);
+            if isempty(yLimits) || numel(yLimits) ~= 2 || any(~isfinite(yLimits))
+                baseSpan = comp.values(~isnan(comp.values));
+                if isempty(baseSpan)
+                    yLimits = [-1 1];
+                else
+                    yLimits = [min(baseSpan), max(baseSpan)];
+                    if yLimits(1) == yLimits(2)
+                        yLimits = yLimits + [-1 1];
+                    end
                 end
             end
-
-            ySeries = jointAngles(:, dimIdx);
-            [yMin, yMax] = computeYAxisLimits(ySeries, boundaryValues);
-            ylim(ax, [yMin yMax]);
+            if yLimits(2) <= yLimits(1)
+                center = mean(yLimits);
+                spread = max(1, abs(diff(yLimits))/2 + 1);
+                yLimits = [center - spread, center + spread];
+            end
+            ylim(ax, yLimits);
 
             xSpan = [timeSeconds(1) timeSeconds(end)];
             if xSpan(1) == xSpan(2)
                 xSpan(2) = xSpan(2) + 1;
             end
-            [shadeHandles, shadeLabels] = shadeRulaBands(ax, xSpan, [yMin yMax], boundaryValues);
+            [bandHandles, bandLabels] = applyThresholdBands(ax, xSpan, yLimits, comp.threshold);
 
-            dataLine = plot(ax, timeSeconds, ySeries, 'LineWidth', 1.1, ...
-                'Color', [0 0.4470 0.7410]);
+            dataLine = plot(ax, timeSeconds, comp.values, ...
+                'LineWidth', 1.1, 'Color', [0 0.4470 0.7410]);
             if exist('uistack', 'file')
-                try
+                try %#ok<TRYNC>
                     uistack(dataLine, 'top');
-                catch
                 end
             end
 
-            if ~isempty(boundaryValues)
-                for vIdx = 1:numel(boundaryValues)
-                    v = boundaryValues(vIdx);
-                    lineHandle = yline(ax, v, '--r', 'LineWidth', 1);
-                    lineHandle.HandleVisibility = 'off';
-                end
-            end
-
-            hold(ax, 'off');
-
-            if dimIdx == numel(app.DimensionNames)
-                xlabel(ax, 'Time (s)');
-            end
-            title(ax, motionLabel, 'Interpreter', 'none', ...
-                'FontWeight', 'normal', 'FontSize', 12);
-
-            if ~isempty(shadeHandles)
-                leg = legend(ax, shadeHandles, shadeLabels, ...
-                    'Location', 'bestoutside', 'AutoUpdate', 'off');
+            if ~isempty(bandHandles)
+                leg = legend(ax, bandHandles, bandLabels, ...
+                    'Location', 'eastoutside', ...
+                    'AutoUpdate', 'off');
                 if ~isempty(leg) && isvalid(leg)
-                    leg.Title.String = 'RULA Subscore';
+                    try %#ok<TRYNC>
+                        title(leg, 'RULA Subscore');
+                    end
+                    leg.Interpreter = 'none';
                 end
             else
                 legend(ax, 'off');
             end
+
+            hold(ax, 'off');
+            ylabel(ax, comp.yLabel, 'Interpreter', 'none');
+            if compIdx == numel(components)
+                xlabel(ax, 'Time (s)');
+            else
+                xlabel(ax, '');
+            end
+            title(ax, comp.label, 'Interpreter', 'none', ...
+                'FontWeight', 'normal', 'FontSize', 12);
         end
     end
 
@@ -346,266 +369,651 @@ onViewChanged();
         upperScore = prctile(scores, 75);
 
         delete(app.PlotPanel.Children);
-        plotGrid = uigridlayout(app.PlotPanel, [2 1], ...
-            'RowHeight', {'1x', '1x'}, ...
-            'Padding', [10 10 10 10]);
+        summaryGrid = uigridlayout(app.PlotPanel, [2 1], ...
+            'RowHeight', {'2x', '1x'}, ...
+            'ColumnWidth', {'1x'}, ...
+            'Padding', [10 10 10 10], ...
+            'RowSpacing', 12);
 
-        axBar = uiaxes(plotGrid);
-        bar(axBar, 1, medScore, 'FaceColor', [0.2 0.45 0.7]);
+        finalTogetherFull = reshape(rula.final_score.together, [], 1);
+        finalTogetherFull = finalTogetherFull(~isnan(finalTogetherFull));
+        if isempty(finalTogetherFull)
+            error('RULA_Visualizer:NoFinalScores', ...
+                'No final RULA scores are available for %s.', trialName);
+        end
+
+        axHist = uiaxes(summaryGrid);
+        axHist.Layout.Row = 1;
+        axHist.Layout.Column = 1;
+        binEdges = 0.5:1:7.5;
+        cappedScores = min(finalTogetherFull, 7);
+        counts = histcounts(cappedScores, binEdges);
+        totalSamples = sum(counts);
+        relCounts = counts / max(totalSamples, 1) * 100;
+        colorAcceptable = [0.20 0.60 0.20];
+        colorInvestigate = [1.00 0.84 0.00];
+        colorChangeSoon = [0.91 0.45 0.13];
+        colorImmediate = [0.80 0.20 0.20];
+        colors = [
+            colorAcceptable;
+            colorAcceptable;
+            colorInvestigate;
+            colorInvestigate;
+            colorChangeSoon;
+            colorChangeSoon;
+            colorImmediate];
+        bar(axHist, 1:7, relCounts, 'FaceColor', 'flat', ...
+            'CData', colors, 'EdgeColor', 'none');
+        maxPerc = max(relCounts);
+        upperPerc = max(maxPerc * 1.15, 1);
+        hold(axHist, 'on');
+        text(axHist, 1:7, relCounts + upperPerc*0.08, ...
+            arrayfun(@(v)sprintf('%.1f%%', v), relCounts, 'UniformOutput', false), ...
+            'HorizontalAlignment', 'center', 'FontSize', 10);
+        axHist.XTick = 1:7;
+        axHist.XLim = [0.5 7.5];
+        xlabel(axHist, 'RULA Score');
+        ylabel(axHist, 'Relative occurrence (%)');
+        title(axHist, 'Overall RULA Score Distribution');
+        ylim(axHist, [0 upperPerc]);
+
+        legendEntries = {
+            '1-2 Acceptable', colorAcceptable;
+            '3-4 Investigate further', colorInvestigate;
+            '5-6 Investigate/change soon', colorChangeSoon;
+            '7 Immediate action', colorImmediate}
+            ;
+        legendHandles = gobjects(size(legendEntries,1),1);
+        for idx = 1:size(legendEntries,1)
+            legendHandles(idx) = plot(axHist, NaN, NaN, 's', ...
+                'MarkerFaceColor', legendEntries{idx,2}, ...
+                'MarkerEdgeColor', 'none', 'LineStyle', 'none', 'MarkerSize', 9);
+        end
+        leg = legend(axHist, legendHandles, legendEntries(:,1), ...
+            'Location', 'northwest', 'Interpreter', 'none', 'Box', 'on');
+        if ~isempty(leg) && isvalid(leg)
+            leg.Title.String = 'Ergonomic Risk';
+            leg.ItemTokenSize = [18 9];
+        end
+        hold(axHist, 'off');
+
+        axBar = uiaxes(summaryGrid);
+        axBar.Layout.Row = 2;
+        axBar.Layout.Column = 1;
+        subjectLabel = "Unknown";
+        if exist('Subject_tmp', 'var') && isfield(Subject_tmp, 'SubjectID') && ~isempty(Subject_tmp.SubjectID)
+            subjectLabel = string(Subject_tmp.SubjectID);
+        else
+            matchIdx = find(app.TrialNames == trialName, 1);
+            if ~isempty(matchIdx)
+                subjectLabel = string(app.ConditionTable.SubjectID(matchIdx));
+            end
+        end
+        trialLabelRaw = strrep(trialName, '_processed.mat', '');
+        meta = parseTrialMetadata(trialLabelRaw);
+        if meta.IsValid
+            subjectDisplay = strrep(formatSubjectLabel(meta.Subject), 'Subject ', 'Subject: ');
+            trialNum = meta.TrialNumber;
+            numVal = str2double(trialNum);
+            if ~isnan(numVal)
+                trialNum = sprintf('%02d', numVal);
+            end
+            trialDisplay = sprintf('Trial: %s', trialNum);
+            dateDisplay = sprintf('Date: %s', meta.Date);
+        else
+            subjectDisplay = strrep(formatSubjectLabel(subjectLabel), 'Subject ', 'Subject: ');
+            trialDigits = regexp(trialLabelRaw, '(\\d+)', 'tokens');
+            if ~isempty(trialDigits)
+                trialStr = trialDigits{end}{1};
+                numVal = str2double(trialStr);
+                if ~isnan(numVal)
+                    trialStr = sprintf('%02d', numVal);
+                end
+                trialDisplay = sprintf('Trial: %s', trialStr);
+            else
+                trialDisplay = sprintf('Trial: %s', trialLabelRaw);
+            end
+            dateDisplay = 'Date: Unknown';
+        end
+
+        xLabelSummary = sprintf('%s, %s, %s', subjectDisplay, trialDisplay, dateDisplay);
+        medTogether = median(cappedScores);
+        q1 = prctile(cappedScores, 25);
+        q3 = prctile(cappedScores, 75);
+        errLow = medTogether - q1;
+        errHigh = q3 - medTogether;
+        bar(axBar, 1, medTogether, 'FaceColor', [0.20 0.45 0.85], 'EdgeColor', 'none');
         hold(axBar, 'on');
-        errorbar(axBar, 1, medScore, medScore - lowerScore, upperScore - medScore, ...
-            'k', 'LineWidth', 1.2);
+        errorbar(axBar, 1, medTogether, errLow, errHigh, ...
+            'Color', [0.1 0.3 0.1], 'LineWidth', 1.4, 'CapSize', 12);
         hold(axBar, 'off');
         axBar.XTick = 1;
-        axBar.XTickLabel = {'Overall RULA'};
-        ylim(axBar, [0 max(7, upperScore + 1)]);
-        ylabel(axBar, 'Score');
-        title(axBar, sprintf('Median RULA Score (IQR: %.1f – %.1f)', lowerScore, upperScore));
+        axBar.XTickLabel = {xLabelSummary};
+        ylim(axBar, [0 max(7, medTogether + errHigh + 1)]);
+        ylabel(axBar, 'Median score');
+        title(axBar, sprintf('Overall Median RULA Score (IQR %.1f – %.1f)', q1, q3));
 
-        axHist = uiaxes(plotGrid);
-        if isfield(rula.s15_neck_trunk_leg_score, 'total_rel')
-            relData = rula.s15_neck_trunk_leg_score.total_rel;
-            relData = relData(~any(isnan(relData),2), :);
-            if ~isempty(relData)
-                bar(axHist, relData(:,1), relData(:,2), 'FaceColor', [0.6 0.6 0.6]);
-                xlabel(axHist, 'Score');
-                ylabel(axHist, 'Relative duration');
-                title(axHist, 'Score distribution (Step 15)');
-                axHist.XTick = relData(:,1);
+    end
+
+    function onStepChanged(~, ~)
+        % Placeholder for future interactive behaviour.
+    end
+
+    function def = getStepDefinition(stepKey)
+        def = struct();
+        if isempty(stepKey)
+            return;
+        end
+        keys = {app.StepDefinitions.Key};
+        idx = find(strcmp(keys, stepKey), 1);
+        if ~isempty(idx)
+            def = app.StepDefinitions(idx);
+        end
+    end
+
+    function components = computeStepComponents(def, ctx)
+        components = struct('label', {}, 'values', {}, 'yLabel', {}, 'threshold', {});
+
+        numDims = numel(app.DimensionNames);
+        sideKey = char(def.Side);
+
+        jointIdxMap.right = struct('t4shoulder', 7, 'shoulder', 8, 'elbow', 9, 'wrist', 10);
+        jointIdxMap.left  = struct('t4shoulder', 11, 'shoulder', 12, 'elbow', 13, 'wrist', 14);
+        jointIdxMap.neck  = struct('neck', 5, 'head', 6);
+        jointIdxMap.trunk = [1 2 3 4];
+        segmentIdx.T8 = 5;
+
+        switch def.Step
+            case 1
+                components = appendComponent(components, makeAngleComponent(jointIdxMap.(sideKey).shoulder, 3, ...
+                    fetchLimits({'s1_upper_arm_pos_hist', sideKey, 'part', 'flex_ext'}), 'Flex/Extension'));
+                components = appendComponent(components, makeAngleComponent(jointIdxMap.(sideKey).shoulder, 1, ...
+                    fetchLimits({'s1_upper_arm_pos_hist', sideKey, 'part', 'abd'}), 'Abduction/Adduction'));
+                components = appendComponent(components, makeAngleComponent(jointIdxMap.(sideKey).t4shoulder, 1, ...
+                    fetchLimits({'s1_upper_arm_pos_hist', sideKey, 'part', 'ele'}), 'Shoulder Elevation'));
+            case 2
+                components = appendComponent(components, makeAngleComponent(jointIdxMap.(sideKey).elbow, 3, ...
+                    fetchLimits({'s2_lower_arm_pos_hist', sideKey, 'part', 'flex_ext'}), 'Flex/Extension'));
+                components = appendComponent(components, makeForearmOffsetComponent(jointIdxMap.(sideKey).wrist, ...
+                    fetchLimits({'s2_lower_arm_pos_hist', sideKey, 'part', 'pos2center'}), sideKey, segmentIdx.T8));
+            case 3
+                components = appendComponent(components, makeAngleComponent(jointIdxMap.(sideKey).wrist, 3, ...
+                    fetchLimits({'s3_wrist_pos_hist', sideKey, 'part', 'flex_ext'}), 'Flex/Extension'));
+                components = appendComponent(components, makeAngleComponent(jointIdxMap.(sideKey).wrist, 1, ...
+                    fetchLimits({'s3_wrist_pos_hist', sideKey, 'part', 'dev'}), 'Deviation'));
+            case 4
+                components = appendComponent(components, makeAngleComponent(jointIdxMap.(sideKey).wrist, 2, ...
+                    fetchLimits({'s4_wrist_pos_hist', sideKey, 'part', 'twist'}), 'Pronation/Supination'));
+            case 5
+                components = appendComponent(components, makeScoreComponent( ...
+                    sprintf('%s Wrist & Arm Posture Score', capitalizeSide(sideKey)), ...
+                    fetchVector({'s5_arm_post_score', sideKey, 'total'}), 'Score'));
+            case 6
+                components = appendComponent(components, makeScoreComponent( ...
+                    sprintf('%s Step 6 Static Condition', capitalizeSide(sideKey)), ...
+                    fetchVector({'s6_arm_muscle_use', sideKey, 'part', 'static'}), 'Flag (0/1)'));
+                components = appendComponent(components, makeScoreComponent( ...
+                    sprintf('%s Step 6 Repetitive Condition', capitalizeSide(sideKey)), ...
+                    fetchVector({'s6_arm_muscle_use', sideKey, 'part', 'repetitiv'}), 'Flag (0/1)'));
+                components = appendComponent(components, makeScoreComponent( ...
+                    sprintf('%s Step 6 Score', capitalizeSide(sideKey)), ...
+                    fetchVector({'s6_arm_muscle_use', sideKey, 'part', 'total_shoulder'}), 'Score'));
+            case 7
+                components = appendComponent(components, makeScoreComponent( ...
+                    sprintf('%s Step 7 Load Adjustment', capitalizeSide(sideKey)), ...
+                    fetchVector({'s7_arm_muscle_load', sideKey, 'total'}), 'Score'));
+            case 8
+                components = appendComponent(components, makeScoreComponent( ...
+                    sprintf('%s Step 8 Wrist/Arm Score', capitalizeSide(sideKey)), ...
+                    fetchVector({'s8_wrist_arm_score', sideKey, 'total'}), 'Score'));
+            case 9
+                neckIndices = [jointIdxMap.neck.neck, jointIdxMap.neck.head];
+                components = appendComponent(components, makeCombinedAngleComponent( ...
+                    'Neck Flex/Extension', neckIndices, 3, fetchLimits({'s9_neck_pos_hist', 'part', 'flex_ext'})));
+                components = appendComponent(components, makeCombinedAngleComponent( ...
+                    'Neck Twist', neckIndices, 2, fetchLimits({'s9_neck_pos_hist', 'part', 'twist'})));
+                components = appendComponent(components, makeCombinedAngleComponent( ...
+                    'Neck Lateral Bending', neckIndices, 1, fetchLimits({'s9_neck_pos_hist', 'part', 'lat'})));
+            case 10
+                trunkIndices = jointIdxMap.trunk;
+                components = appendComponent(components, makeCombinedAngleComponent( ...
+                    'Trunk Flex/Extension', trunkIndices, 3, fetchLimits({'s10_trunk_pos_hist', 'part', 'flex_ext'})));
+                components = appendComponent(components, makeCombinedAngleComponent( ...
+                    'Trunk Twist', trunkIndices, 2, fetchLimits({'s10_trunk_pos_hist', 'part', 'twist'})));
+                components = appendComponent(components, makeCombinedAngleComponent( ...
+                    'Trunk Lateral Bending', trunkIndices, 1, fetchLimits({'s10_trunk_pos_hist', 'part', 'lat'})));
+            case 11
+                components = appendComponent(components, makeScoreComponent( ...
+                    'Step 11 Leg Score', fetchVector({'s11_leg_pos', 'total'}), 'Score'));
+            case 12
+                components = appendComponent(components, makeScoreComponent( ...
+                    'Step 12 Trunk/Neck/Leg Posture Score', fetchVector({'s12_trunk_neck_leg_post_score', 'total'}), 'Score'));
+            case 13
+                components = appendComponent(components, makeScoreComponent( ...
+                    'Neck Muscle Use Flag', fetchVector({'s13_trunk_neck_muscle_use', 'neck'}), 'Flag (0/1)'));
+                components = appendComponent(components, makeScoreComponent( ...
+                    'Trunk Muscle Use Flag', fetchVector({'s13_trunk_neck_muscle_use', 'trunk'}), 'Flag (0/1)'));
+                components = appendComponent(components, makeScoreComponent( ...
+                    'Step 13 Score', fetchVector({'s13_trunk_neck_muscle_use', 'total'}), 'Flag (0/1)'));
+            case 14
+                components = appendComponent(components, makeScoreComponent( ...
+                    'Step 14 Load Adjustment', fetchVector({'s14_trunk_neck_muscle_use', 'total'}), 'Score'));
+            case 15
+                components = appendComponent(components, makeScoreComponent( ...
+                    'Step 15 Neck/Trunk/Leg Score', fetchVector({'s15_neck_trunk_leg_score', 'total'}), 'Score'));
+        end
+
+        function comp = makeAngleComponent(jointIdx, dimIdx, limits, suffix)
+            comp = [];
+            if isempty(jointIdx) || jointIdx < 1 || jointIdx > numel(ctx.Settings.JointNames)
                 return;
             end
+            values = ensureColumn(double(ctx.Data.jointAngle(:, (jointIdx - 1) * numDims + dimIdx)));
+            label = sprintf('%s %s', formatJointName(ctx.Settings.JointNames{jointIdx}), suffix);
+            comp = baseComponent(label, values, 'Degrees (°)', createLimitThreshold(limits));
         end
-        histogram(axHist, scores, 'BinEdges', 0.5:1:8.5, 'FaceColor', [0.6 0.6 0.6]);
-        xlabel(axHist, 'Score');
-        ylabel(axHist, 'Occurrences');
-        title(axHist, 'Score distribution (Step 15)');
-        axHist.XTick = 1:8;
-    end
 
-    function labels = buildMotionLabels()
-        labels = struct();
-
-        labels = addJoint(labels, 'jL5S1', ...
-            'abduction', 'Lateral Bending', ...
-            'rotation', 'Axial Bending', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jL4L3', ...
-            'abduction', 'Lateral Bending', ...
-            'rotation', 'Axial Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jL1T12', ...
-            'abduction', 'Lateral Bending', ...
-            'rotation', 'Axial Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jT9T8', ...
-            'abduction', 'Lateral Bending', ...
-            'rotation', 'Axial Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jT1C7', ...
-            'abduction', 'Lateral Bending', ...
-            'rotation', 'Axial Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jC1Head', ...
-            'abduction', 'Lateral Bending', ...
-            'rotation', 'Axial Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jRightT4Shoulder', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jRightShoulder', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jRightElbow', ...
-            'abduction', 'Ulnar Deviation/Radial Deviation', ...
-            'rotation', 'Pronation/Supination', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jRightWrist', ...
-            'abduction', 'Ulnar Deviation/Radial Deviation', ...
-            'rotation', 'Pronation/Supination', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jLeftT4Shoulder', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jLeftShoulder', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jLeftElbow', ...
-            'abduction', 'Ulnar Deviation/Radial Deviation', ...
-            'rotation', 'Pronation/Supination', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jLeftWrist', ...
-            'abduction', 'Ulnar Deviation/Radial Deviation', ...
-            'rotation', 'Pronation/Supination', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jRightHip', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jRightKnee', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jRightAnkle', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Dorsiflexion/Plantarflexion');
-
-        labels = addJoint(labels, 'jRightBallFoot', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jLeftHip', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jLeftKnee', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        labels = addJoint(labels, 'jLeftAnkle', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Dorsiflexion/Plantarflexion');
-
-        labels = addJoint(labels, 'jLeftBallFoot', ...
-            'abduction', 'Abduction/Adduction', ...
-            'rotation', 'Internal/External Rotation', ...
-            'flexion', 'Flexion/Extension');
-
-        function outLabels = addJoint(inLabels, jointKey, varargin)
-            outLabels = inLabels;
-            if ~isfield(outLabels, jointKey)
-                outLabels.(jointKey) = struct();
+        function comp = makeCombinedAngleComponent(label, jointIdxList, dimIdx, limits)
+            comp = [];
+            if isempty(jointIdxList)
+                return;
             end
-            for idx = 1:2:numel(varargin)
-                dimKey = varargin{idx};
-                motion = varargin{idx+1};
-                outLabels.(jointKey).(dimKey) = motion;
+            values = zeros(size(ctx.Data.jointAngle, 1), 1);
+            for ii = 1:numel(jointIdxList)
+                idx = jointIdxList(ii);
+                if idx < 1 || idx > numel(ctx.Settings.JointNames)
+                    continue;
+                end
+                values = values + ensureColumn(double(ctx.Data.jointAngle(:, (idx - 1) * numDims + dimIdx)));
+            end
+            comp = baseComponent(label, values, 'Degrees (°)', createLimitThreshold(limits));
+        end
+
+        function comp = makeForearmOffsetComponent(wristIdx, limits, sideKeyLocal, t8Idx)
+            comp = [];
+            values = computeForearmOffset(ctx, wristIdx, t8Idx);
+            if isempty(values)
+                return;
+            end
+            label = sprintf('%s Forearm Offset', capitalizeSide(sideKeyLocal));
+            comp = baseComponent(label, values, 'Metres', createLimitThreshold(limits));
+        end
+
+        function comp = makeScoreComponent(label, values, unit)
+            if nargin < 3 || isempty(unit)
+                unit = 'Score';
+            end
+            values = ensureColumn(double(values));
+            if isempty(values)
+                comp = [];
+            else
+                comp = baseComponent(label, values, unit, createScoreThreshold(values));
+            end
+        end
+
+        function comp = baseComponent(label, values, yLabel, threshold)
+            comp.label = label;
+            comp.values = values;
+            comp.yLabel = yLabel;
+            comp.threshold = threshold;
+        end
+
+        function list = appendComponent(list, comp)
+            if isempty(comp)
+                return;
+            end
+            list(end+1) = comp; %#ok<AGROW>
+        end
+
+        function limits = fetchLimits(pathCells)
+            try
+                limits = getfield(ctx.Rula, pathCells{:}, 'limits'); %#ok<GFLD>
+            catch
+                limits = [];
+            end
+        end
+
+        function values = fetchVector(pathCells)
+            try
+                values = getfield(ctx.Rula, pathCells{:}); %#ok<GFLD>
+            catch
+                values = [];
             end
         end
     end
 
-    function label = resolveMotionLabel(jointLabel, dimName)
-        jointKey = char(jointLabel);
-        dimKey = char(dimName);
-        if isfield(app.MotionLabels, jointKey)
-            jointStruct = app.MotionLabels.(jointKey);
-            if isfield(jointStruct, dimKey)
-                stored = jointStruct.(dimKey);
-                if ~isempty(stored)
-                    label = stored;
+    function yLimits = computeYLimits(values, threshold)
+        v = values(~isnan(values));
+        if isempty(v)
+            v = 0;
+        end
+        yMin = min(v);
+        yMax = max(v);
+
+        if nargin > 1 && isstruct(threshold)
+            switch threshold.mode
+                case 'limits'
+                    limits = threshold.limits;
+                    if ~isempty(limits)
+                        finiteBounds = [limits(isfinite(limits(:,1)),1); limits(isfinite(limits(:,2)),2)];
+                        if ~isempty(finiteBounds)
+                            yMin = min([yMin; finiteBounds]);
+                            yMax = max([yMax; finiteBounds]);
+                        end
+                    end
+                case 'scores'
+                    scores = threshold.scores;
+                    if ~isempty(scores)
+                        yMin = min([yMin; scores(:)]);
+                        yMax = max([yMax; scores(:)]);
+                    end
+            end
+        end
+
+        if yMin == yMax
+            if nargin > 1 && isstruct(threshold) && strcmp(threshold.mode, 'scores')
+                yMin = yMin - 0.5;
+                yMax = yMax + 0.5;
+            else
+                spread = max(1, abs(yMin) * 0.1 + 1);
+                yMin = yMin - spread;
+                yMax = yMax + spread;
+            end
+        else
+            if nargin > 1 && isstruct(threshold) && strcmp(threshold.mode, 'scores')
+                yMin = yMin - 0.5;
+                yMax = yMax + 0.5;
+            else
+                margin = 0.05 * (yMax - yMin);
+                if margin <= 0
+                    margin = 1;
+                end
+                yMin = yMin - margin;
+                yMax = yMax + margin;
+            end
+        end
+
+        yLimits = [yMin, yMax];
+    end
+
+    function [patchHandles, patchLabels] = applyThresholdBands(ax, xSpan, yLimits, threshold)
+        patchHandles = gobjects(0, 1);
+        patchLabels = {};
+
+        if nargin < 4 || isempty(threshold) || ~isstruct(threshold) || strcmp(threshold.mode, 'none')
+            return;
+        end
+
+        switch threshold.mode
+            case 'limits'
+                limits = threshold.limits;
+                if isempty(limits)
                     return;
                 end
-            end
+                numBands = size(limits, 1);
+                greys = linspace(0.9, 0.4, numBands);
+                for idx = 1:numBands
+                    lower = limits(idx, 1);
+                    upper = limits(idx, 2);
+                    score = limits(idx, 3);
+                    yLower = isfinite(lower) * lower + (~isfinite(lower)) * yLimits(1);
+                    yUpper = isfinite(upper) * upper + (~isfinite(upper)) * yLimits(2);
+                    if yUpper <= yLower
+                        continue;
+                    end
+                    patchHandles(end+1, 1) = patch(ax, ...
+                        [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
+                        [yLower yLower yUpper yUpper], ...
+                        greys(idx) * ones(1, 3), ...
+                        'EdgeColor', 'none', ...
+                        'FaceAlpha', 0.18, ...
+                        'HandleVisibility', 'on'); %#ok<AGROW>
+                    patchLabels{end+1, 1} = sprintf('Subscore %g (%s to %s)', score, ...
+                        formatBound(lower), formatBound(upper)); %#ok<AGROW>
+                    if isfinite(lower)
+                        yline(ax, lower, '--r', 'LineWidth', 1, 'HandleVisibility', 'off');
+                    end
+                    if isfinite(upper)
+                        yline(ax, upper, '--r', 'LineWidth', 1, 'HandleVisibility', 'off');
+                    end
+                end
+            case 'scores'
+                scores = threshold.scores;
+                if isempty(scores)
+                    return;
+                end
+                scores = sort(scores(:).');
+                numBands = numel(scores);
+                greys = linspace(0.85, 0.55, numBands);
+                boundaries = [scores - 0.5, scores(end) + 0.5];
+                for idx = 1:numBands
+                    lower = boundaries(idx);
+                    upper = boundaries(idx + 1);
+                    yLower = max(lower, yLimits(1));
+                    yUpper = min(upper, yLimits(2));
+                    if yUpper <= yLower
+                        continue;
+                    end
+                    patchHandles(end+1, 1) = patch(ax, ...
+                        [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
+                        [yLower yLower yUpper yUpper], ...
+                        greys(idx) * ones(1, 3), ...
+                        'EdgeColor', 'none', ...
+                        'FaceAlpha', 0.18, ...
+                        'HandleVisibility', 'on'); %#ok<AGROW>
+                    patchLabels{end+1, 1} = sprintf('Subscore %s', formatNumeric(scores(idx))); %#ok<AGROW>
+                end
+                for idx = 2:numel(boundaries) - 1
+                    yline(ax, boundaries(idx), '--r', 'LineWidth', 1, 'HandleVisibility', 'off');
+                end
         end
-        label = formatDimensionName(dimKey);
     end
 
-    function [yMin, yMax] = computeYAxisLimits(series, boundaries)
-        values = series(~isnan(series));
-        values = values(:);
-        if ~isempty(boundaries)
-            boundaryVals = boundaries(~isnan(boundaries));
-            values = [values; boundaryVals(:)];
-        end
-        if isempty(values)
-            values = 0;
-        end
-        yMin = min(values);
-        yMax = max(values);
-        if yMin == yMax
-            spread = max(1, abs(yMin) * 0.1 + 1);
-            yMin = yMin - spread;
-            yMax = yMax + spread;
+    function threshold = createLimitThreshold(limits)
+        if isempty(limits)
+            threshold = struct('mode', 'none');
         else
-            margin = 0.05 * (yMax - yMin);
-            if margin <= 0
-                margin = 1;
-            end
-            yMin = yMin - margin;
-            yMax = yMax + margin;
+            threshold = struct('mode', 'limits', 'limits', double(limits));
         end
     end
 
-    function [handles, labels] = shadeRulaBands(ax, xSpan, yLimits, boundaries)
-        handles = gobjects(0, 1);
-        labels = {};
-        if nargin < 4 || isempty(boundaries)
+    function threshold = createScoreThreshold(values)
+        scores = unique(values(~isnan(values)));
+        if isempty(scores)
+            threshold = struct('mode', 'none');
+        else
+            threshold = struct('mode', 'scores', 'scores', double(scores(:).'));
+        end
+    end
+
+    function value = computeForearmOffset(ctx, wristIdx, t8Idx)
+        value = [];
+        if ~isfield(ctx.Data, 'position') || isempty(ctx.Data.position)
             return;
+        end
+        pos = ctx.Data.position;
+        cols = size(pos, 2);
+        if wristIdx < 1 || 3 * wristIdx > cols || t8Idx < 1 || 3 * t8Idx > cols
+            return;
+        end
+        wristXY = pos(:, (wristIdx - 1) * 3 + (1:2));
+        t8XY = pos(:, (t8Idx - 1) * 3 + (1:2));
+        delta = wristXY - t8XY;
+
+        if isfield(ctx.Data, 'orientation') && ~isempty(ctx.Data.orientation)
+            quats = ctx.Data.orientation(:, (t8Idx - 1) * 4 + (1:4));
+            yawDeg = computeSegmentYawDegrees(quats);
         else
-            boundaries = sort(unique(boundaries(~isnan(boundaries))));
-            if isempty(boundaries)
+            yawDeg = zeros(size(delta, 1), 1);
+        end
+
+        theta = -yawDeg;
+        value = ensureColumn(delta(:,1) .* sind(theta) + delta(:,2) .* cosd(theta));
+    end
+
+    function yawDeg = computeSegmentYawDegrees(quats)
+        if isempty(quats)
+            yawDeg = 0;
+            return;
+        end
+        qw = quats(:,1); qx = quats(:,2); qy = quats(:,3); qz = quats(:,4);
+        yawDeg = rad2deg(atan2(2 * (qw .* qz + qx .* qy), 1 - 2 * (qy.^2 + qz.^2)));
+    end
+
+    function arr = ensureColumn(arr)
+        arr = double(arr(:));
+    end
+
+    function name = formatJointName(raw)
+        if isempty(raw)
+            name = '';
+            return;
+        end
+        if raw(1) == 'j'
+            raw = raw(2:end);
+        end
+        name = regexprep(raw, '([a-z])([A-Z])', '$1 $2');
+        name = strrep(name, '_', ' ');
+    end
+
+    function text = capitalizeSide(side)
+        if isempty(side)
+            text = '';
+            return;
+        end
+        if isstring(side)
+            side = char(side);
+        end
+        firstChar = upper(side(1));
+        if numel(side) > 1
+            rest = lower(side(2:end));
+        else
+            rest = '';
+        end
+        text = [firstChar rest];
+    end
+
+    function label = formatSubjectLabel(subjectKey)
+        keyChar = char(subjectKey);
+        if startsWith(keyChar, 'Subject ', 'IgnoreCase', true)
+            label = keyChar;
+            return;
+        end
+        digits = regexp(keyChar, '(\\d+)', 'tokens');
+        if ~isempty(digits)
+            numVal = str2double(digits{1}{1});
+            if ~isnan(numVal)
+                label = sprintf('Subject %02d', numVal);
                 return;
             end
+            label = sprintf('Subject %s', digits{1}{1});
+            return;
         end
-        binEdges = [-inf; boundaries(:); inf];
-        numBands = numel(binEdges) - 1;
-        if numBands < 1
-            numBands = 1;
-            binEdges = [-inf; inf];
-        end
-        greys = linspace(0.9, 0.4, numBands);
-        for idx = 1:numBands
-            lowerBound = binEdges(idx);
-            upperBound = binEdges(idx + 1);
-            yLower = yLimits(1);
-            if isfinite(lowerBound)
-                yLower = lowerBound;
+        label = sprintf('Subject %s', keyChar);
+    end
+
+    function label = formatTrialLabel(trialKey)
+        meta = parseTrialMetadata(trialKey);
+        if meta.IsValid
+            trialNum = meta.TrialNumber;
+            numVal = str2double(trialNum);
+            if ~isnan(numVal)
+                trialNum = sprintf('%02d', numVal);
             end
-            yUpper = yLimits(2);
-            if isfinite(upperBound)
-                yUpper = upperBound;
-            end
-            if yUpper <= yLower
-                continue;
-            end
-            grey = greys(idx);
-            patchHandle = patch(ax, ...
-                [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
-                [yLower yLower yUpper yUpper], ...
-                grey * ones(1, 3), ...
-                'EdgeColor', 'none', ...
-                'FaceAlpha', 0.18, ...
-                'HandleVisibility', 'on');
-            handles(end+1, 1) = patchHandle; %#ok<AGROW>
-            labels{end+1, 1} = sprintf('%d', idx);
+            label = sprintf('Trial %s – %s', trialNum, meta.Date);
+        else
+            label = char(trialKey);
         end
     end
 
-    function name = formatDimensionName(dimKey)
-        switch lower(string(dimKey))
-            case "abduction"
-                name = 'Abduction/Adduction';
-            case "rotation"
-                name = 'Internal/External Rotation';
-            case "flexion"
-                name = 'Flexion/Extension';
-            otherwise
-                name = char(dimKey);
+    function meta = parseTrialMetadata(name)
+        meta = struct('Subject', '', 'Date', '', 'TrialNumber', '', 'IsValid', false);
+        base = char(name);
+        base = regexprep(base, '\.[^.]+$', '');
+        base = regexprep(base, '_processed$', '');
+        tokens = regexp(base, '^(P\d+)[_-](\d{2}-\d{2}-\d{4})[-_](\d+)$', 'tokens', 'once');
+        if isempty(tokens)
+            return;
         end
+        meta.Subject = tokens{1};
+        meta.Date = tokens{2};
+        meta.TrialNumber = tokens{3};
+        meta.IsValid = true;
+    end
+
+    function text = formatBound(value)
+        if isfinite(value)
+            text = formatNumeric(value);
+        elseif value < 0
+            text = '-Inf';
+        else
+            text = 'Inf';
+        end
+    end
+
+    function text = formatNumeric(val)
+        if abs(val) >= 100 || abs(val) < 0.01
+            text = sprintf('%.2g', val);
+        else
+            text = sprintf('%.2f', val);
+        end
+    end
+
+    function timeSeconds = deriveTimeVector(Data_tmp, Subject_tmp)
+        if isfield(Data_tmp, 'time') && ~isempty(Data_tmp.time)
+            base = double(Data_tmp.time);
+            timeSeconds = (base - base(1)) * 1e-3;
+        elseif isfield(Subject_tmp, 'Parameter') && isfield(Subject_tmp.Parameter, 'frameRate')
+            fs = Subject_tmp.Parameter.frameRate;
+            nSamples = size(Data_tmp.jointAngle, 1);
+            timeSeconds = (0:nSamples-1).' / fs;
+        else
+            nSamples = size(Data_tmp.jointAngle, 1);
+            timeSeconds = (0:nSamples-1).' / 60;
+        end
+    end
+
+    function defs = buildStepDefinitions(~)
+        defs = struct('Key', {}, 'Label', {}, 'Step', {}, 'Side', {});
+        defs = addDef(defs, 'step1_right', 'Step 1 – Upper Arm (Right)', 1, 'right');
+        defs = addDef(defs, 'step1_left',  'Step 1 – Upper Arm (Left)', 1, 'left');
+        defs = addDef(defs, 'step2_right', 'Step 2 – Lower Arm (Right)', 2, 'right');
+        defs = addDef(defs, 'step2_left',  'Step 2 – Lower Arm (Left)', 2, 'left');
+        defs = addDef(defs, 'step3_right', 'Step 3 – Wrist (Right)', 3, 'right');
+        defs = addDef(defs, 'step3_left',  'Step 3 – Wrist (Left)', 3, 'left');
+        defs = addDef(defs, 'step4_right', 'Step 4 – Wrist Twist (Right)', 4, 'right');
+        defs = addDef(defs, 'step4_left',  'Step 4 – Wrist Twist (Left)', 4, 'left');
+        defs = addDef(defs, 'step5_right', 'Step 5 – Wrist/Arm Posture Score (Right)', 5, 'right');
+        defs = addDef(defs, 'step5_left',  'Step 5 – Wrist/Arm Posture Score (Left)', 5, 'left');
+        defs = addDef(defs, 'step6_right', 'Step 6 – Muscle Use (Right)', 6, 'right');
+        defs = addDef(defs, 'step6_left',  'Step 6 – Muscle Use (Left)', 6, 'left');
+        defs = addDef(defs, 'step7_right', 'Step 7 – Load/Force (Right)', 7, 'right');
+        defs = addDef(defs, 'step7_left',  'Step 7 – Load/Force (Left)', 7, 'left');
+        defs = addDef(defs, 'step8_right', 'Step 8 – Wrist/Arm Score (Right)', 8, 'right');
+        defs = addDef(defs, 'step8_left',  'Step 8 – Wrist/Arm Score (Left)', 8, 'left');
+        defs = addDef(defs, 'step9',       'Step 9 – Neck', 9, '');
+        defs = addDef(defs, 'step10',      'Step 10 – Trunk', 10, '');
+        defs = addDef(defs, 'step11',      'Step 11 – Legs', 11, '');
+        defs = addDef(defs, 'step12',      'Step 12 – Trunk/Neck/Leg Posture Score', 12, '');
+        defs = addDef(defs, 'step13',      'Step 13 – Muscle Use (Neck/Trunk)', 13, '');
+        defs = addDef(defs, 'step14',      'Step 14 – Load/Force (Neck/Trunk)', 14, '');
+        defs = addDef(defs, 'step15',      'Step 15 – Neck/Trunk/Leg Score', 15, '');
+    end
+
+    function defs = addDef(defs, key, label, stepNumber, side)
+        entry.Key = key;
+        entry.Label = label;
+        entry.Step = stepNumber;
+        if nargin < 5
+            entry.Side = '';
+        else
+            entry.Side = side;
+        end
+        defs(end+1) = entry; %#ok<AGROW>
+    end
+
+    function tf = isvalidControl(ctrl)
+        tf = ~isempty(ctrl) && isgraphics(ctrl) && isvalid(ctrl);
     end
 
     function onExportFigure()
