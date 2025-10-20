@@ -554,9 +554,12 @@ onViewChanged();
         handles = gobjects(0, 1);
         labels = {};
         if nargin < 4 || isempty(boundaries)
-            boundaries = [];
+            return;
         else
             boundaries = sort(unique(boundaries(~isnan(boundaries))));
+            if isempty(boundaries)
+                return;
+            end
         end
         binEdges = [-inf; boundaries(:); inf];
         numBands = numel(binEdges) - 1;
