@@ -451,32 +451,56 @@ onViewChanged();
         end
         trialLabelRaw = strrep(trialName, '_processed.mat', '');
         meta = parseTrialMetadata(trialLabelRaw);
+
+        subjectValue = 'Unknown';
+        trialValue = 'Unknown';
+        dateValue = 'Unknown';
+
         if meta.IsValid
-            subjectDisplay = strrep(formatSubjectLabel(meta.Subject), 'Subject ', 'Subject: ');
-            trialNum = meta.TrialNumber;
-            numVal = str2double(trialNum);
-            if ~isnan(numVal)
-                trialNum = sprintf('%02d', numVal);
+            subjectDigits = regexp(meta.Subject, '\d+', 'match', 'once');
+            if ~isempty(subjectDigits)
+                numVal = str2double(subjectDigits);
+                if ~isnan(numVal)
+                    subjectDigits = sprintf('%02d', numVal);
+                end
+                subjectValue = subjectDigits;
+            else
+                subjectValue = meta.Subject;
             end
-            trialDisplay = sprintf('Trial: %s', trialNum);
-            dateDisplay = sprintf('Date: %s', meta.Date);
+
+            trialDigits = meta.TrialNumber;
+            numVal = str2double(trialDigits);
+            if ~isnan(numVal)
+                trialDigits = sprintf('%02d', numVal);
+            end
+            trialValue = trialDigits;
+            dateValue = meta.Date;
         else
-            subjectDisplay = strrep(formatSubjectLabel(subjectLabel), 'Subject ', 'Subject: ');
-            trialDigits = regexp(trialLabelRaw, '(\\d+)', 'tokens');
+            subjectDigits = regexp(char(subjectLabel), '\d+', 'match', 'once');
+            if ~isempty(subjectDigits)
+                numVal = str2double(subjectDigits);
+                if ~isnan(numVal)
+                    subjectDigits = sprintf('%02d', numVal);
+                end
+                subjectValue = subjectDigits;
+            else
+                subjectValue = char(subjectLabel);
+            end
+
+            trialDigits = regexp(trialLabelRaw, '(\d+)', 'tokens');
             if ~isempty(trialDigits)
                 trialStr = trialDigits{end}{1};
                 numVal = str2double(trialStr);
                 if ~isnan(numVal)
                     trialStr = sprintf('%02d', numVal);
                 end
-                trialDisplay = sprintf('Trial: %s', trialStr);
+                trialValue = trialStr;
             else
-                trialDisplay = sprintf('Trial: %s', trialLabelRaw);
+                trialValue = trialLabelRaw;
             end
-            dateDisplay = 'Date: Unknown';
         end
 
-        xLabelSummary = sprintf('%s, %s, %s', subjectDisplay, trialDisplay, dateDisplay);
+        xLabelSummary = sprintf('Subject: %s | Trial: %s | Date: %s', subjectValue, trialValue, dateValue);
         medTogether = median(cappedScores);
         q1 = prctile(cappedScores, 25);
         q3 = prctile(cappedScores, 75);
@@ -750,9 +774,14 @@ onViewChanged();
                 if isempty(limits)
                     return;
                 end
-                numBands = size(limits, 1);
-                greys = linspace(0.9, 0.4, numBands);
-                for idx = 1:numBands
+                scores = limits(:, 3);
+                finiteScores = scores(isfinite(scores));
+                if isempty(finiteScores)
+                    finiteScores = 0;
+                end
+                minScore = min(finiteScores);
+                maxScore = max(finiteScores);
+                for idx = 1:size(limits, 1)
                     lower = limits(idx, 1);
                     upper = limits(idx, 2);
                     score = limits(idx, 3);
@@ -761,20 +790,22 @@ onViewChanged();
                     if yUpper <= yLower
                         continue;
                     end
+                    bandColor = scoreToColor(score, minScore, maxScore);
                     patchHandles(end+1, 1) = patch(ax, ...
                         [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
                         [yLower yLower yUpper yUpper], ...
-                        greys(idx) * ones(1, 3), ...
+                        bandColor, ...
                         'EdgeColor', 'none', ...
-                        'FaceAlpha', 0.18, ...
+                        'FaceAlpha', 0.32, ...
                         'HandleVisibility', 'on'); %#ok<AGROW>
                     patchLabels{end+1, 1} = sprintf('Subscore %g (%s to %s)', score, ...
                         formatBound(lower), formatBound(upper)); %#ok<AGROW>
+                    edgeColor = darkenColor(bandColor, 0.65);
                     if isfinite(lower)
-                        yline(ax, lower, '--r', 'LineWidth', 1, 'HandleVisibility', 'off');
+                        yline(ax, lower, '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
                     end
                     if isfinite(upper)
-                        yline(ax, upper, '--r', 'LineWidth', 1, 'HandleVisibility', 'off');
+                        yline(ax, upper, '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
                     end
                 end
             case 'scores'
@@ -783,10 +814,10 @@ onViewChanged();
                     return;
                 end
                 scores = sort(scores(:).');
-                numBands = numel(scores);
-                greys = linspace(0.85, 0.55, numBands);
+                minScore = scores(1);
+                maxScore = scores(end);
                 boundaries = [scores - 0.5, scores(end) + 0.5];
-                for idx = 1:numBands
+                for idx = 1:numel(scores)
                     lower = boundaries(idx);
                     upper = boundaries(idx + 1);
                     yLower = max(lower, yLimits(1));
@@ -794,18 +825,66 @@ onViewChanged();
                     if yUpper <= yLower
                         continue;
                     end
+                    bandColor = scoreToColor(scores(idx), minScore, maxScore);
                     patchHandles(end+1, 1) = patch(ax, ...
                         [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
                         [yLower yLower yUpper yUpper], ...
-                        greys(idx) * ones(1, 3), ...
+                        bandColor, ...
                         'EdgeColor', 'none', ...
-                        'FaceAlpha', 0.18, ...
+                        'FaceAlpha', 0.32, ...
                         'HandleVisibility', 'on'); %#ok<AGROW>
                     patchLabels{end+1, 1} = sprintf('Subscore %s', formatNumeric(scores(idx))); %#ok<AGROW>
                 end
                 for idx = 2:numel(boundaries) - 1
-                    yline(ax, boundaries(idx), '--r', 'LineWidth', 1, 'HandleVisibility', 'off');
+                    bandColor = scoreToColor(boundaries(idx), minScore, maxScore);
+                    edgeColor = darkenColor(bandColor, 0.65);
+                    yline(ax, boundaries(idx), '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
                 end
+        end
+
+        function color = scoreToColor(score, minScore, maxScore)
+            if ~isfinite(score)
+                score = maxScore;
+            end
+            if maxScore <= minScore
+                t = 0.5;
+            else
+                t = (score - minScore) / (maxScore - minScore);
+            end
+            t = max(0, min(1, t));
+            baseStops = [
+                0.12 0.55 0.25;  % green
+                0.95 0.85 0.20;  % amber
+                0.78 0.18 0.15   % red
+            ];
+            color = interpolateStops(baseStops, t);
+        end
+
+        function color = darkenColor(color, factor)
+            color = max(0, min(1, color * factor));
+        end
+
+        function color = interpolateStops(stops, t)
+            if isempty(stops)
+                color = [0.5 0.5 0.5];
+                return;
+            end
+            nStops = size(stops, 1);
+            if nStops == 1
+                color = stops(1, :);
+                return;
+            end
+            tScaled = t * (nStops - 1) + 1;
+            idxLow = floor(tScaled);
+            idxHigh = ceil(tScaled);
+            idxLow = max(1, min(nStops, idxLow));
+            idxHigh = max(1, min(nStops, idxHigh));
+            frac = tScaled - idxLow;
+            if idxLow == idxHigh
+                color = stops(idxLow, :);
+            else
+                color = (1 - frac) * stops(idxLow, :) + frac * stops(idxHigh, :);
+            end
         end
     end
 
@@ -895,21 +974,33 @@ onViewChanged();
 
     function label = formatSubjectLabel(subjectKey)
         keyChar = char(subjectKey);
-        if startsWith(keyChar, 'Subject ', 'IgnoreCase', true)
-            label = keyChar;
-            return;
+        keyChar = strtrim(keyChar);
+
+        numStr = '';
+        token = regexp(keyChar, 'Subject\s*#?\s*(\d+)', 'tokens', 'once');
+        if ~isempty(token)
+            numStr = token{1};
         end
-        digits = regexp(keyChar, '(\\d+)', 'tokens');
-        if ~isempty(digits)
-            numVal = str2double(digits{1}{1});
-            if ~isnan(numVal)
-                label = sprintf('Subject %02d', numVal);
-                return;
+        if isempty(numStr)
+            token = regexp(keyChar, 'P(\d+)', 'tokens', 'once');
+            if ~isempty(token)
+                numStr = token{1};
             end
-            label = sprintf('Subject %s', digits{1}{1});
-            return;
         end
-        label = sprintf('Subject %s', keyChar);
+        if isempty(numStr)
+            numStr = regexp(keyChar, '\d+', 'match', 'once');
+        end
+
+        if ~isempty(numStr)
+            numVal = str2double(numStr);
+            if ~isnan(numVal)
+                label = sprintf('Subject #%02d', numVal);
+            else
+                label = sprintf('Subject #%s', numStr);
+            end
+        else
+            label = sprintf('Subject %s', keyChar);
+        end
     end
 
     function label = formatTrialLabel(trialKey)
@@ -920,7 +1011,7 @@ onViewChanged();
             if ~isnan(numVal)
                 trialNum = sprintf('%02d', numVal);
             end
-            label = sprintf('Trial %s – %s', trialNum, meta.Date);
+            label = sprintf('Trial #%s', trialNum);
         else
             label = char(trialKey);
         end
