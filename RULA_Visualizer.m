@@ -257,6 +257,8 @@ onViewChanged();
                 'No time-series data are available for %s.', def.Label);
         end
 
+        maxPlotPoints = 6000;
+
         delete(app.PlotPanel.Children);
         plotGrid = uigridlayout(app.PlotPanel, [numel(components) + 1, 1], ...
             'Padding', [10 10 10 10]);
@@ -302,9 +304,10 @@ onViewChanged();
             if xSpan(1) == xSpan(2)
                 xSpan(2) = xSpan(2) + 1;
             end
-            [bandHandles, bandLabels] = applyThresholdBands(ax, xSpan, yLimits, comp.threshold);
+            [bandHandles, bandLabels] = applyThresholdBands(ax, xSpan, yLimits, comp.threshold, comp.values);
 
-            dataLine = plot(ax, timeSeconds, comp.values, ...
+            [plotTimes, plotValues] = downsampleSeries(timeSeconds, comp.values, maxPlotPoints);
+            dataLine = plot(ax, plotTimes, plotValues, ...
                 'LineWidth', 1.1, 'Color', [0 0.4470 0.7410]);
             if exist('uistack', 'file')
                 try %#ok<TRYNC>
@@ -760,12 +763,30 @@ onViewChanged();
         yLimits = [yMin, yMax];
     end
 
-    function [patchHandles, patchLabels] = applyThresholdBands(ax, xSpan, yLimits, threshold)
+    function [patchHandles, patchLabels] = applyThresholdBands(ax, xSpan, yLimits, threshold, values)
         patchHandles = gobjects(0, 1);
         patchLabels = {};
 
         if nargin < 4 || isempty(threshold) || ~isstruct(threshold) || strcmp(threshold.mode, 'none')
             return;
+        end
+        if nargin < 5
+            values = [];
+        end
+
+        valueData = double(values(:));
+        finiteData = valueData(isfinite(valueData));
+        dataExists = ~isempty(finiteData);
+        dataMin = -inf;
+        dataMax = inf;
+        if dataExists
+            dataMin = min(finiteData);
+            dataMax = max(finiteData);
+        end
+        bandTol = 0;
+        if dataExists
+            span = dataMax - dataMin;
+            bandTol = max(1e-6, 0.015 * max(1, abs(span)));
         end
 
         switch threshold.mode
@@ -790,16 +811,9 @@ onViewChanged();
                     if yUpper <= yLower
                         continue;
                     end
+                    lowerBound = lower;
+                    upperBound = upper;
                     bandColor = scoreToColor(score, minScore, maxScore);
-                    patchHandles(end+1, 1) = patch(ax, ...
-                        [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
-                        [yLower yLower yUpper yUpper], ...
-                        bandColor, ...
-                        'EdgeColor', 'none', ...
-                        'FaceAlpha', 0.32, ...
-                        'HandleVisibility', 'on'); %#ok<AGROW>
-                    patchLabels{end+1, 1} = sprintf('Subscore %g (%s to %s)', score, ...
-                        formatBound(lower), formatBound(upper)); %#ok<AGROW>
                     edgeColor = darkenColor(bandColor, 0.65);
                     if isfinite(lower)
                         yline(ax, lower, '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
@@ -807,6 +821,43 @@ onViewChanged();
                     if isfinite(upper)
                         yline(ax, upper, '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
                     end
+
+                    dataInBand = finiteData;
+                    if dataExists
+                        if isfinite(lowerBound)
+                            dataInBand = dataInBand(dataInBand >= lowerBound - bandTol);
+                        end
+                        if isfinite(upperBound)
+                            dataInBand = dataInBand(dataInBand <= upperBound + bandTol);
+                        end
+                    end
+                    if isempty(dataInBand)
+                        continue;
+                    end
+                    bandMin = min(dataInBand);
+                    bandMax = max(dataInBand);
+                    if isfinite(lowerBound) && ~isfinite(upperBound)
+                        yLowerVis = max(yLower, lowerBound);
+                    else
+                        yLowerVis = max(yLower, bandMin - bandTol);
+                    end
+                    if isfinite(upperBound) && ~isfinite(lowerBound)
+                        yUpperVis = min(yUpper, upperBound);
+                    else
+                        yUpperVis = min(yUpper, bandMax + bandTol);
+                    end
+                    if yUpperVis <= yLowerVis
+                        continue;
+                    end
+                    patchHandles(end+1, 1) = patch(ax, ...
+                        [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
+                        [yLowerVis yLowerVis yUpperVis yUpperVis], ...
+                        bandColor, ...
+                        'EdgeColor', 'none', ...
+                        'FaceAlpha', 0.32, ...
+                        'HandleVisibility', 'on'); %#ok<AGROW>
+                    patchLabels{end+1, 1} = sprintf('Subscore %g (%s to %s)', score, ...
+                        formatBound(lower), formatBound(upper)); %#ok<AGROW>
                 end
             case 'scores'
                 scores = threshold.scores;
@@ -825,20 +876,42 @@ onViewChanged();
                     if yUpper <= yLower
                         continue;
                     end
+                    lowerBound = lower;
+                    upperBound = upper;
                     bandColor = scoreToColor(scores(idx), minScore, maxScore);
-                    patchHandles(end+1, 1) = patch(ax, ...
-                        [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
-                        [yLower yLower yUpper yUpper], ...
-                        bandColor, ...
-                        'EdgeColor', 'none', ...
-                        'FaceAlpha', 0.32, ...
-                        'HandleVisibility', 'on'); %#ok<AGROW>
-                    patchLabels{end+1, 1} = sprintf('Subscore %s', formatNumeric(scores(idx))); %#ok<AGROW>
+                    dataInBand = finiteData;
+                    if dataExists
+                        if isfinite(lowerBound)
+                            dataInBand = dataInBand(dataInBand >= lowerBound - bandTol);
+                        end
+                        if isfinite(upperBound)
+                            dataInBand = dataInBand(dataInBand <= upperBound + bandTol);
+                        end
+                    end
+                    if ~isempty(dataInBand)
+                        bandMin = min(dataInBand);
+                        bandMax = max(dataInBand);
+                        yLowerVis = max(yLower, bandMin - bandTol);
+                        yUpperVis = min(yUpper, bandMax + bandTol);
+                        if yUpperVis <= yLowerVis
+                            continue;
+                        end
+                        patchHandles(end+1, 1) = patch(ax, ...
+                            [xSpan(1) xSpan(2) xSpan(2) xSpan(1)], ...
+                            [yLowerVis yLowerVis yUpperVis yUpperVis], ...
+                            bandColor, ...
+                            'EdgeColor', 'none', ...
+                            'FaceAlpha', 0.32, ...
+                            'HandleVisibility', 'on'); %#ok<AGROW>
+                        patchLabels{end+1, 1} = sprintf('Subscore %s', formatNumeric(scores(idx))); %#ok<AGROW>
+                    end
                 end
                 for idx = 2:numel(boundaries) - 1
-                    bandColor = scoreToColor(boundaries(idx), minScore, maxScore);
-                    edgeColor = darkenColor(bandColor, 0.65);
-                    yline(ax, boundaries(idx), '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
+                    scoreLeft = scores(idx - 1);
+                    scoreRight = scores(idx);
+                    midScore = (scoreLeft + scoreRight) / 2;
+                    lineColor = darkenColor(scoreToColor(midScore, minScore, maxScore), 0.65);
+                    yline(ax, boundaries(idx), '--', 'Color', lineColor, 'LineWidth', 1, 'HandleVisibility', 'off');
                 end
         end
 
@@ -900,9 +973,29 @@ onViewChanged();
         scores = unique(values(~isnan(values)));
         if isempty(scores)
             threshold = struct('mode', 'none');
-        else
-            threshold = struct('mode', 'scores', 'scores', double(scores(:).'));
+            return;
         end
+        scores = double(scores(:).');
+        maxDiscreteBands = 8;
+        finiteScores = scores(isfinite(scores));
+        if numel(scores) <= maxDiscreteBands && numel(finiteScores) <= maxDiscreteBands
+            threshold = struct('mode', 'scores', 'scores', scores);
+            return;
+        end
+
+        if isempty(finiteScores)
+            threshold = struct('mode', 'scores', 'scores', scores(1));
+            return;
+        end
+
+        numBands = min(maxDiscreteBands, max(3, ceil(numel(finiteScores) / 25)));
+        edges = linspace(min(finiteScores), max(finiteScores), numBands + 1);
+        mids = (edges(1:end-1) + edges(2:end)) / 2;
+        limits = [edges(1:end-1).' edges(2:end).'];
+        limits(:,3) = mids.';
+        limits(1,1) = -inf;
+        limits(end,2) = inf;
+        threshold = struct('mode', 'limits', 'limits', limits);
     end
 
     function value = computeForearmOffset(ctx, wristIdx, t8Idx)
@@ -941,6 +1034,30 @@ onViewChanged();
 
     function arr = ensureColumn(arr)
         arr = double(arr(:));
+    end
+
+    function [tOut, vOut] = downsampleSeries(tIn, vIn, maxPoints)
+        if nargin < 3 || isempty(maxPoints) || maxPoints <= 0
+            maxPoints = numel(tIn);
+        end
+        if isempty(tIn) || isempty(vIn)
+            tOut = tIn;
+            vOut = vIn;
+            return;
+        end
+        n = min(numel(tIn), numel(vIn));
+        tBase = tIn(1:n);
+        vBase = ensureColumn(vIn(1:n));
+        if n <= maxPoints
+            tOut = tBase;
+            vOut = vBase;
+            return;
+        end
+        idx = unique(round(linspace(1, n, maxPoints)));
+        idx(idx < 1) = 1;
+        idx(idx > n) = n;
+        tOut = tBase(idx);
+        vOut = vBase(idx);
     end
 
     function name = formatJointName(raw)
