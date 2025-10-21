@@ -49,9 +49,15 @@ app.UniqueSubjects = uniqueSubjects;
 thresholds = RULA_visualization_thresholds();
 app.Thresholds = thresholds;
 app.StepDefinitions = buildStepDefinitions(Settings);
+app.VideoDir = fullfile(repoRoot, 'ReferenceVideos');
+app.Playback = createPlaybackState();
+app.CursorLines = gobjects(0, 1);
+app.TimeSeriesAxes = gobjects(0, 1);
+app.VideoImageHandle = gobjects(0);
 
 app.Fig = uifigure('Name', 'RULA Visualizer', ...
     'Position', [100 100 1200 720]);
+app.Fig.CloseRequestFcn = @(src, evt)onFigureClosed();
 app.MainGrid = uigridlayout(app.Fig, [1 2], ...
     'ColumnWidth', {240, '1x'}, ...
     'RowHeight', {'1x'});
@@ -60,8 +66,8 @@ app.MainGrid = uigridlayout(app.Fig, [1 2], ...
 app.ControlPanel = uipanel(app.MainGrid, 'Title', 'Controls');
 app.ControlPanel.Layout.Row = 1;
 app.ControlPanel.Layout.Column = 1;
-app.ControlGrid = uigridlayout(app.ControlPanel, [11 1], ...
-    'RowHeight', {30,30,30,30,30,30,30,30,'1x',30,30}, ...
+app.ControlGrid = uigridlayout(app.ControlPanel, [14 1], ...
+    'RowHeight', {30,30,30,30,30,30,30,30,30,30,30,'1x',30,30}, ...
     'Padding', [10 10 10 10]);
 
 subjectLabel = uilabel(app.ControlGrid, 'Text', 'Subject Selection:', ...
@@ -80,7 +86,7 @@ trialLabel.Layout.Row = 3;
 app.TrialDropdown = uidropdown(app.ControlGrid, ...
     'Items', {}, ...
     'ItemsData', {}, ...
-    'ValueChangedFcn', @(src, evt)onTrialChanged());
+    'ValueChangedFcn', @(src, evt)onTrialChanged(evt.Value));
 app.TrialDropdown.Layout.Row = 4;
 
 viewLabel = uilabel(app.ControlGrid, 'Text', 'View Data:', ...
@@ -113,24 +119,91 @@ else
     app.StepDropdown.Enable = 'off';
 end
 
+app.PlaybackControlGrid = uigridlayout(app.ControlGrid, [1 3], ...
+    'ColumnWidth', {70, 45, '1x'}, ...
+    'ColumnSpacing', 8, ...
+    'Padding', [0 0 0 0]);
+app.PlaybackControlGrid.Layout.Row = 9;
+app.PlayPauseButton = uibutton(app.PlaybackControlGrid, 'Text', 'Play', ...
+    'ButtonPushedFcn', @(src, evt)onPlayPause());
+app.PlayPauseButton.Layout.Column = 1;
+app.PlaybackSpeedLabel = uilabel(app.PlaybackControlGrid, 'Text', 'Speed', ...
+    'HorizontalAlignment', 'right');
+app.PlaybackSpeedLabel.Layout.Column = 2;
+app.PlaybackSpeedDropdown = uidropdown(app.PlaybackControlGrid, ...
+    'Items', {'0.25x','0.5x','0.75x','1x','1.25x','1.5x','2x'}, ...
+    'Value', '1x', ...
+    'ValueChangedFcn', @(src, evt)onPlaybackSpeedChanged());
+app.PlaybackSpeedDropdown.Layout.Column = 3;
+
+app.PlaybackSlider = uislider(app.ControlGrid, ...
+    'Limits', [0 1], ...
+    'Value', 0, ...
+    'ValueChangingFcn', @(src, evt)onPlaybackScrub(evt.Value, true), ...
+    'ValueChangedFcn', @(src, evt)onPlaybackScrub(evt.Value, false));
+app.PlaybackSlider.Layout.Row = 10;
+
+app.PlaybackTimeLabel = uilabel(app.ControlGrid, ...
+    'Text', '00:00 / 00:00 (1.0x)', ...
+    'HorizontalAlignment', 'left');
+app.PlaybackTimeLabel.Layout.Row = 11;
+
 app.MessageLabel = uilabel(app.ControlGrid, ...
     'Text', '', ...
     'HorizontalAlignment', 'left', ...
     'WordWrap', 'on');
-app.MessageLabel.Layout.Row = 9;
+app.MessageLabel.Layout.Row = 12;
 
 app.PlotButton = uibutton(app.ControlGrid, 'Text', 'Generate Plot', ...
     'ButtonPushedFcn', @(src, evt)onPlotRequested());
-app.PlotButton.Layout.Row = 10;
+app.PlotButton.Layout.Row = 13;
 
 app.ExportButton = uibutton(app.ControlGrid, 'Text', 'Save Figure...', ...
     'ButtonPushedFcn', @(src, evt)onExportFigure());
-app.ExportButton.Layout.Row = 11;
+app.ExportButton.Layout.Row = 14;
 
 % Plot area
 app.PlotPanel = uipanel(app.MainGrid, 'Title', 'Visualization');
 app.PlotPanel.Layout.Row = 1;
 app.PlotPanel.Layout.Column = 2;
+app.VisualGrid = uigridlayout(app.PlotPanel, [1 2], ...
+    'ColumnWidth', {'2x', '3x'}, ...
+    'ColumnSpacing', 10, ...
+    'Padding', [10 10 10 10]);
+app.VideoPanel = uipanel(app.VisualGrid, 'Title', 'Reference Video');
+app.VideoPanel.Layout.Row = 1;
+app.VideoPanel.Layout.Column = 1;
+app.VideoPanelGrid = uigridlayout(app.VideoPanel, [2 1], ...
+    'RowHeight', {'1x', 35}, ...
+    'RowSpacing', 5, ...
+    'Padding', [5 5 5 5]);
+app.VideoAxes = uiaxes(app.VideoPanelGrid, 'Visible', 'off');
+app.VideoAxes.Layout.Row = 1;
+app.VideoAxes.Layout.Column = 1;
+if isprop(app.VideoAxes, 'Toolbar')
+    app.VideoAxes.Toolbar.Visible = 'off';
+end
+if isprop(app.VideoAxes, 'Interactions')
+    app.VideoAxes.Interactions = [];
+end
+axis(app.VideoAxes, 'off');
+app.VideoMessage = uilabel(app.VideoPanelGrid, ...
+    'Text', 'Select a trial to load video.', ...
+    'HorizontalAlignment', 'center', ...
+    'VerticalAlignment', 'center', ...
+    'WordWrap', 'on');
+app.VideoMessage.Layout.Row = 1;
+app.VideoMessage.Layout.Column = 1;
+app.VideoStatusLabel = uilabel(app.VideoPanelGrid, ...
+    'Text', '', ...
+    'HorizontalAlignment', 'center', ...
+    'VerticalAlignment', 'center', ...
+    'WordWrap', 'on');
+app.VideoStatusLabel.Layout.Row = 2;
+app.VideoStatusLabel.Layout.Column = 1;
+app.TimeSeriesPanel = uipanel(app.VisualGrid, 'Title', 'Time Series');
+app.TimeSeriesPanel.Layout.Row = 1;
+app.TimeSeriesPanel.Layout.Column = 2;
 
 % Housekeeping
 onSubjectChanged();
@@ -146,6 +219,9 @@ onViewChanged();
             app.TrialDropdown.Value = '';
             app.TrialDropdown.Enable = 'off';
             showMessage(sprintf('No trials located for %s.', formatSubjectLabel(subjectKey)), true);
+            updatePlaybackSource([]);
+            refreshPlaybackUI();
+            setPlaybackTime(0, 'source', 'subject');
             return;
         end
 
@@ -156,11 +232,29 @@ onViewChanged();
         app.TrialDropdown.Value = trialKeys{1};
         app.TrialDropdown.Enable = 'on';
         showMessage('', false);
-        onTrialChanged();
+        onTrialChanged(app.TrialDropdown.Value);
     end
 
-    function onTrialChanged()
-        % placeholder for future use (e.g., auto preview)
+    function onTrialChanged(selectedValue)
+        pausePlaybackTimer();
+        app.Playback.CurrentTime = 0;
+        app.Playback.DataDuration = 0;
+        if nargin < 1 || isempty(selectedValue)
+            selectedValue = app.TrialDropdown.Value;
+        end
+        selectedValueChar = char(selectedValue);
+        if isempty(selectedValueChar)
+            updatePlaybackSource([]);
+            refreshPlaybackUI();
+            return;
+        end
+        trialKey = string(selectedValueChar);
+        if ~isempty(app.TrialDropdown) && isgraphics(app.TrialDropdown)
+            app.TrialDropdown.Value = selectedValueChar;
+        end
+        updatePlaybackSource(trialKey);
+        refreshPlaybackUI();
+        setPlaybackTime(0, 'source', 'trial');
     end
 
     function onViewChanged()
@@ -259,8 +353,10 @@ onViewChanged();
 
         maxPlotPoints = 6000;
 
-        delete(app.PlotPanel.Children);
-        plotGrid = uigridlayout(app.PlotPanel, [numel(components) + 1, 1], ...
+        app.TimeSeriesPanel.Title = 'Time Series';
+        app.TimeSeriesPanel.Title = 'Summary Statistics';
+        delete(app.TimeSeriesPanel.Children);
+        plotGrid = uigridlayout(app.TimeSeriesPanel, [numel(components) + 1, 1], ...
             'Padding', [10 10 10 10]);
         rowHeights = [{40}, repmat({'1x'}, 1, numel(components))];
         plotGrid.RowHeight = rowHeights;
@@ -273,13 +369,46 @@ onViewChanged();
         titleLabel.Layout.Row = 1;
         titleLabel.Layout.Column = 1;
 
+        app.TimeSeriesAxes = gobjects(numel(components), 1);
+        app.CursorLines = gobjects(numel(components), 1);
+        app.Playback.TimeVector = ensureColumn(timeSeconds);
+
+        legendWidth = 100;
+
         for compIdx = 1:numel(components)
             comp = components(compIdx);
-            ax = uiaxes(plotGrid);
-            ax.Layout.Row = compIdx + 1;
+
+            rowContainer = uigridlayout(plotGrid, [1 2], ...
+                'ColumnWidth', {'1x', legendWidth}, ...
+                'ColumnSpacing', 10, ...
+                'RowSpacing', 0, ...
+                'Padding', [0 0 0 0]);
+            rowContainer.Layout.Row = compIdx + 1;
+            rowContainer.Layout.Column = 1;
+
+            ax = uiaxes(rowContainer);
+            ax.Layout.Row = 1;
             ax.Layout.Column = 1;
             grid(ax, 'on');
             hold(ax, 'on');
+            ax.ButtonDownFcn = @(src, evt)onAxisClicked(src, evt);
+            app.TimeSeriesAxes(compIdx) = ax;
+
+            legendWrapper = uigridlayout(rowContainer, [3 1], ...
+                'RowHeight', {'1x', 'fit', '1x'}, ...
+                'ColumnWidth', {legendWidth}, ...
+                'RowSpacing', 0, ...
+                'Padding', [0 0 0 0]);
+            legendWrapper.Layout.Row = 1;
+            legendWrapper.Layout.Column = 2;
+
+            legendPanel = uipanel(legendWrapper, ...
+                'BorderType', 'none', ...
+                'Title', '', ...
+                'BackgroundColor', [1 1 1]);
+            legendPanel.Layout.Row = 2;
+            legendPanel.Layout.Column = 1;
+            legendPanel.Visible = 'off';
 
             yLimits = computeYLimits(comp.values, comp.threshold);
             if isempty(yLimits) || numel(yLimits) ~= 2 || any(~isfinite(yLimits))
@@ -304,29 +433,18 @@ onViewChanged();
             if xSpan(1) == xSpan(2)
                 xSpan(2) = xSpan(2) + 1;
             end
-            [bandHandles, bandLabels] = applyThresholdBands(ax, xSpan, yLimits, comp.threshold, comp.values);
+            xlim(ax, xSpan);
+            [bandHandles, bandLabels, bandColors] = applyThresholdBands(ax, xSpan, yLimits, comp.threshold, comp.values);
+            renderLegendEntries(legendPanel, bandLabels, bandColors);
 
             [plotTimes, plotValues] = downsampleSeries(timeSeconds, comp.values, maxPlotPoints);
             dataLine = plot(ax, plotTimes, plotValues, ...
-                'LineWidth', 1.1, 'Color', [0 0.4470 0.7410]);
+                'LineWidth', 1.1, 'Color', [0 0.4470 0.7410], ...
+                'HitTest', 'off', 'PickableParts', 'none');
             if exist('uistack', 'file')
                 try %#ok<TRYNC>
                     uistack(dataLine, 'top');
                 end
-            end
-
-            if ~isempty(bandHandles)
-                leg = legend(ax, bandHandles, bandLabels, ...
-                    'Location', 'eastoutside', ...
-                    'AutoUpdate', 'off');
-                if ~isempty(leg) && isvalid(leg)
-                    try %#ok<TRYNC>
-                        title(leg, 'RULA Subscore');
-                    end
-                    leg.Interpreter = 'none';
-                end
-            else
-                legend(ax, 'off');
             end
 
             hold(ax, 'off');
@@ -338,7 +456,19 @@ onViewChanged();
             end
             title(ax, comp.label, 'Interpreter', 'none', ...
                 'FontWeight', 'normal', 'FontSize', 12);
+
+            cursor = xline(ax, 0, '--', 'Color', [0.2 0.2 0.2], ...
+                'LineWidth', 1.1, 'HandleVisibility', 'off');
+            cursor.HitTest = 'off';
+            cursor.PickableParts = 'none';
+            cursor.Visible = 'off';
+            app.CursorLines(compIdx) = cursor;
         end
+
+        updateDataDuration(timeSeconds(end));
+        refreshPlaybackUI();
+        updateCursorVisibility();
+        setPlaybackTime(app.Playback.CurrentTime, 'source', 'plot');
     end
 
     function plotSummary()
@@ -371,8 +501,8 @@ onViewChanged();
         lowerScore = prctile(scores, 25);
         upperScore = prctile(scores, 75);
 
-        delete(app.PlotPanel.Children);
-        summaryGrid = uigridlayout(app.PlotPanel, [2 1], ...
+        delete(app.TimeSeriesPanel.Children);
+        summaryGrid = uigridlayout(app.TimeSeriesPanel, [2 1], ...
             'RowHeight', {'2x', '1x'}, ...
             'ColumnWidth', {'1x'}, ...
             'Padding', [10 10 10 10], ...
@@ -520,6 +650,424 @@ onViewChanged();
         ylabel(axBar, 'Median score');
         title(axBar, sprintf('Overall Median RULA Score (IQR %.1f – %.1f)', q1, q3));
 
+        app.TimeSeriesAxes = gobjects(0, 1);
+        app.CursorLines = gobjects(0, 1);
+        app.Playback.TimeVector = [];
+        updateDataDuration(0);
+        refreshPlaybackUI();
+    end
+
+    function updatePlaybackSource(trialKey)
+        clearVideoFrame();
+        app.Playback.HasVideo = false;
+        app.Playback.Reader = [];
+        app.Playback.VideoPath = '';
+        app.Playback.Duration = 0;
+        app.Playback.VideoFrameRate = 0;
+        app.Playback.HasError = false;
+
+        if nargin < 1 || isempty(trialKey)
+            updateVideoMessage('Select a trial to load video.', false);
+            return;
+        end
+        if ~isfolder(app.VideoDir)
+            updateVideoMessage('ReferenceVideos folder not found.', true);
+            return;
+        end
+
+        baseName = char(trialKey);
+        baseName = stripSuffixIgnoreCase(baseName, '.mat');
+        nameNoProcessed = stripSuffixIgnoreCase(baseName, '_processed');
+        nameNoSuffix = stripSuffixIgnoreCase(baseName, '-processed');
+        variantCandidates = {baseName, nameNoProcessed, nameNoSuffix};
+        targetKeys = {};
+        for vIdx = 1:numel(variantCandidates)
+            candidate = variantCandidates{vIdx};
+            if isempty(candidate)
+                continue;
+            end
+            key = normalizeVideoKey(candidate);
+            if isempty(key)
+                continue;
+            end
+            if ~any(strcmp(targetKeys, key))
+                targetKeys{end+1} = key; %#ok<AGROW>
+            end
+        end
+        if isempty(targetKeys)
+            updateVideoMessage('No reference video available for this trial.', false);
+            return;
+        end
+
+        dirEntries = [dir(fullfile(app.VideoDir, '*.mp4')); dir(fullfile(app.VideoDir, '*.MP4'))];
+        if isempty(dirEntries)
+            updateVideoMessage('No reference video available for this trial.', false);
+            return;
+        end
+
+        videoPath = '';
+        for idx = 1:numel(dirEntries)
+            entry = dirEntries(idx);
+            if entry.isdir
+                continue;
+            end
+            fileName = entry.name;
+            [~, nameOnly, ext] = fileparts(fileName);
+            if ~ismember(lower(ext), {'.mp4'})
+                continue;
+            end
+            candidateVariants = {nameOnly, ...
+                stripSuffixIgnoreCase(nameOnly, '_processed'), ...
+                stripSuffixIgnoreCase(nameOnly, '-processed')};
+            candidateKeys = {};
+            for cvIdx = 1:numel(candidateVariants)
+                candidateVariant = candidateVariants{cvIdx};
+                if isempty(candidateVariant)
+                    continue;
+                end
+                key = normalizeVideoKey(candidateVariant);
+                if isempty(key)
+                    continue;
+                end
+                if ~any(strcmp(candidateKeys, key))
+                    candidateKeys{end+1} = key; %#ok<AGROW>
+                end
+            end
+            matchFound = false;
+            for ckIdx = 1:numel(candidateKeys)
+                if any(strcmp(targetKeys, candidateKeys{ckIdx}))
+                    matchFound = true;
+                    break;
+                end
+            end
+            if matchFound
+                videoPath = fullfile(entry.folder, entry.name);
+                break;
+            end
+        end
+        if isempty(videoPath)
+            updateVideoMessage('No reference video available for this trial.', false);
+            return;
+        end
+
+        try
+            reader = VideoReader(videoPath);
+        catch ME
+            updateVideoMessage(sprintf('Unable to open video: %s', ME.message), true);
+            return;
+        end
+
+        app.Playback.HasVideo = true;
+        app.Playback.Reader = reader;
+        app.Playback.VideoPath = videoPath;
+        app.Playback.Duration = max(0, reader.Duration);
+        app.Playback.VideoFrameRate = reader.FrameRate;
+        app.Playback.CurrentTime = 0;
+        updateVideoFrame(0);
+        updateVideoMessage('', false);
+    end
+
+    function refreshPlaybackUI()
+        updateTotalDuration();
+        total = app.Playback.TotalDuration;
+        hasTimeline = total > 0;
+        if ~isempty(app.PlaybackSlider) && isgraphics(app.PlaybackSlider)
+            if hasTimeline
+                app.PlaybackSlider.Enable = 'on';
+                app.PlaybackSlider.Limits = [0 total];
+                setSliderValue(app.Playback.CurrentTime);
+            else
+                app.PlaybackSlider.Enable = 'off';
+                app.PlaybackSlider.Limits = [0 1];
+                setSliderValue(0);
+            end
+        end
+        if ~isempty(app.PlayPauseButton) && isgraphics(app.PlayPauseButton)
+            if hasTimeline
+                app.PlayPauseButton.Enable = 'on';
+            else
+                app.PlayPauseButton.Enable = 'off';
+            end
+        end
+        updatePlayButtonText();
+        updatePlaybackTimeLabel();
+        updateCursorVisibility();
+    end
+
+    function setPlaybackTime(targetTime, varargin)
+        total = app.Playback.TotalDuration;
+        if total <= 0
+            targetTime = 0;
+        else
+            targetTime = max(0, min(targetTime, total));
+        end
+        app.Playback.CurrentTime = targetTime;
+
+        setSliderValue(targetTime);
+        moveCursorLines(targetTime);
+        updatePlaybackTimeLabel();
+
+        if app.Playback.HasVideo
+            updateVideoFrame(targetTime);
+        end
+
+        if app.Playback.IsPlaying && total > 0 && targetTime >= total - 1e-6
+            pausePlaybackTimer();
+            app.Playback.CurrentTime = total;
+            moveCursorLines(total);
+            updatePlaybackTimeLabel();
+        end
+    end
+
+    function setSliderValue(val)
+        if isempty(app.PlaybackSlider) || ~isgraphics(app.PlaybackSlider)
+            return;
+        end
+        app.Playback.InternalUpdate = true;
+        app.PlaybackSlider.Value = val;
+        app.Playback.InternalUpdate = false;
+    end
+
+    function updateVideoFrame(timeSec)
+        if ~app.Playback.HasVideo || isempty(app.Playback.Reader)
+            clearVideoFrame();
+            return;
+        end
+        reader = app.Playback.Reader;
+        if ~isvalidVideoReader(reader)
+            updateVideoMessage('Video reader became invalid.', true);
+            app.Playback.HasVideo = false;
+            return;
+        end
+        frameTime = min(max(timeSec, 0), max(reader.Duration - (1 / max(reader.FrameRate, 30)), 0));
+        try
+            reader.CurrentTime = frameTime;
+            frame = readFrame(reader);
+        catch ME
+            updateVideoMessage(sprintf('Unable to read video frame: %s', ME.message), true);
+            app.Playback.HasVideo = false;
+            return;
+        end
+        if isempty(app.VideoImageHandle) || ~isgraphics(app.VideoImageHandle)
+            cla(app.VideoAxes);
+            app.VideoImageHandle = image(app.VideoAxes, frame);
+        else
+            app.VideoImageHandle.CData = frame;
+        end
+        axis(app.VideoAxes, 'image');
+        app.VideoAxes.DataAspectRatio = [1 1 1];
+        app.VideoAxes.XTick = [];
+        app.VideoAxes.YTick = [];
+        app.VideoAxes.Visible = 'on';
+        app.VideoMessage.Visible = false;
+        drawnow limitrate;
+    end
+
+    function clearVideoFrame()
+        if ~isempty(app.VideoImageHandle) && isgraphics(app.VideoImageHandle)
+            delete(app.VideoImageHandle);
+        end
+        app.VideoImageHandle = gobjects(0);
+        if isgraphics(app.VideoAxes)
+            cla(app.VideoAxes);
+            app.VideoAxes.Visible = 'off';
+        end
+        if isgraphics(app.VideoMessage)
+            app.VideoMessage.Visible = true;
+        end
+    end
+
+    function updateVideoMessage(msg, isError)
+        if isempty(app.VideoMessage) || ~isgraphics(app.VideoMessage)
+            return;
+        end
+        if nargin < 2
+            isError = false;
+        end
+        if isempty(strtrim(msg))
+            app.VideoMessage.Visible = false;
+        else
+            app.VideoMessage.Visible = 'on';
+            app.VideoMessage.Text = msg;
+            if isError
+                app.VideoMessage.FontColor = [0.72 0.18 0.14];
+            else
+                app.VideoMessage.FontColor = [0.25 0.25 0.25];
+            end
+        end
+        if isempty(strtrim(msg)) && app.Playback.HasVideo
+            app.VideoAxes.Visible = 'on';
+        elseif ~app.Playback.HasVideo
+            app.VideoAxes.Visible = 'off';
+        end
+    end
+
+    function onPlayPause()
+        if app.Playback.IsPlaying
+            pausePlaybackTimer();
+            return;
+        end
+        if app.Playback.TotalDuration <= 0
+            return;
+        end
+        if app.Playback.CurrentTime >= app.Playback.TotalDuration - 1e-6
+            setPlaybackTime(0, 'source', 'play');
+        end
+        startPlaybackTimer();
+    end
+
+    function startPlaybackTimer()
+        if isempty(app.Playback.Timer) || ~isvalid(app.Playback.Timer)
+            app.Playback.Timer = timer('ExecutionMode', 'fixedSpacing', ...
+                'Period', 0.04, ...
+                'TimerFcn', @(src, evt)onPlaybackTick(src));
+        end
+        app.Playback.IsPlaying = true;
+        app.Playback.LastTick = tic;
+        if strcmp(app.Playback.Timer.Running, 'off')
+            start(app.Playback.Timer);
+        end
+        updatePlayButtonText();
+    end
+
+    function pausePlaybackTimer()
+        if ~isempty(app.Playback.Timer) && isvalid(app.Playback.Timer) ...
+                && strcmp(app.Playback.Timer.Running, 'on')
+            stop(app.Playback.Timer);
+        end
+        app.Playback.IsPlaying = false;
+        app.Playback.LastTick = [];
+        updatePlayButtonText();
+    end
+
+    function onPlaybackTick(src)
+        if ~app.Playback.IsPlaying || app.Playback.TotalDuration <= 0
+            return;
+        end
+        period = src.Period;
+        dtTarget = period * max(app.Playback.Speed, 0.05);
+        nowTick = tic;
+        if ~isempty(app.Playback.LastTick)
+            elapsed = toc(app.Playback.LastTick);
+            dt = elapsed * max(app.Playback.Speed, 0.05);
+        else
+            dt = dtTarget;
+        end
+        app.Playback.LastTick = tic;
+        newTime = app.Playback.CurrentTime + dt;
+        if newTime >= app.Playback.TotalDuration
+            setPlaybackTime(app.Playback.TotalDuration, 'source', 'timer');
+            pausePlaybackTimer();
+        else
+            setPlaybackTime(newTime, 'source', 'timer');
+        end
+    end
+
+    function onPlaybackSpeedChanged()
+        valueStr = app.PlaybackSpeedDropdown.Value;
+        speed = parseSpeed(valueStr);
+        app.Playback.Speed = speed;
+        updatePlaybackTimeLabel();
+    end
+
+    function speed = parseSpeed(valueStr)
+        if endsWith(valueStr, 'x')
+            valueStr = erase(valueStr, 'x');
+        end
+        speed = str2double(valueStr);
+        if isnan(speed) || speed <= 0
+            speed = 1.0;
+        end
+    end
+
+    function onPlaybackScrub(position, ~)
+        if app.Playback.InternalUpdate
+            return;
+        end
+        pausePlaybackTimer();
+        setPlaybackTime(position, 'source', 'slider');
+    end
+
+    function moveCursorLines(timeSec)
+        if isempty(app.CursorLines)
+            return;
+        end
+        for idx = 1:numel(app.CursorLines)
+            cursor = app.CursorLines(idx);
+            if ~isempty(cursor) && isgraphics(cursor)
+                cursor.Value = timeSec;
+            end
+        end
+    end
+
+    function updateCursorVisibility()
+        shouldShow = app.Playback.TotalDuration > 0 && ~isempty(app.CursorLines);
+        for idx = 1:numel(app.CursorLines)
+            cursor = app.CursorLines(idx);
+            if ~isempty(cursor) && isgraphics(cursor)
+                if shouldShow
+                    cursor.Visible = 'on';
+                else
+                    cursor.Visible = 'off';
+                end
+            end
+        end
+    end
+
+    function updateDataDuration(durationSec)
+        if isempty(durationSec) || ~isfinite(durationSec)
+            durationSec = 0;
+        end
+        app.Playback.DataDuration = max(0, durationSec);
+        updateTotalDuration();
+    end
+
+    function updateTotalDuration()
+        total = max([app.Playback.DataDuration, app.Playback.Duration]);
+        app.Playback.TotalDuration = total;
+    end
+
+    function updatePlaybackTimeLabel()
+        total = app.Playback.TotalDuration;
+        current = app.Playback.CurrentTime;
+        speed = app.Playback.Speed;
+        if isempty(app.PlaybackTimeLabel) || ~isgraphics(app.PlaybackTimeLabel)
+            return;
+        end
+        app.PlaybackTimeLabel.Text = sprintf('%s / %s (%.2fx)', ...
+            formatTime(current), formatTime(total), speed);
+    end
+
+    function updatePlayButtonText()
+        if isempty(app.PlayPauseButton) || ~isgraphics(app.PlayPauseButton)
+            return;
+        end
+        if app.Playback.IsPlaying
+            app.PlayPauseButton.Text = 'Pause';
+        else
+            app.PlayPauseButton.Text = 'Play';
+        end
+    end
+
+    function text = formatTime(seconds)
+        if ~isfinite(seconds) || seconds < 0
+            seconds = 0;
+        end
+        minutes = floor(seconds / 60);
+        secs = floor(seconds - minutes * 60);
+        text = sprintf('%02d:%02d', minutes, secs);
+    end
+
+    function onAxisClicked(~, evt)
+        if isempty(evt) || ~isfield(evt, 'IntersectionPoint') || isempty(evt.IntersectionPoint)
+            return;
+        end
+        timeSec = evt.IntersectionPoint(1);
+        if ~isfinite(timeSec)
+            return;
+        end
+        pausePlaybackTimer();
+        setPlaybackTime(timeSec, 'source', 'axis');
     end
 
     function onStepChanged(~, ~)
@@ -763,9 +1311,10 @@ onViewChanged();
         yLimits = [yMin, yMax];
     end
 
-    function [patchHandles, patchLabels] = applyThresholdBands(ax, xSpan, yLimits, threshold, values)
+    function [patchHandles, patchLabels, patchColors] = applyThresholdBands(ax, xSpan, yLimits, threshold, values)
         patchHandles = gobjects(0, 1);
         patchLabels = {};
+        patchColors = {};
 
         if nargin < 4 || isempty(threshold) || ~isstruct(threshold) || strcmp(threshold.mode, 'none')
             return;
@@ -816,10 +1365,14 @@ onViewChanged();
                     bandColor = scoreToColor(score, minScore, maxScore);
                     edgeColor = darkenColor(bandColor, 0.65);
                     if isfinite(lower)
-                        yline(ax, lower, '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
+                        lowerLine = yline(ax, lower, '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
+                        lowerLine.HitTest = 'off';
+                        lowerLine.PickableParts = 'none';
                     end
                     if isfinite(upper)
-                        yline(ax, upper, '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
+                        upperLine = yline(ax, upper, '--', 'Color', edgeColor, 'LineWidth', 1, 'HandleVisibility', 'off');
+                        upperLine.HitTest = 'off';
+                        upperLine.PickableParts = 'none';
                     end
 
                     dataInBand = finiteData;
@@ -855,9 +1408,12 @@ onViewChanged();
                         bandColor, ...
                         'EdgeColor', 'none', ...
                         'FaceAlpha', 0.32, ...
-                        'HandleVisibility', 'on'); %#ok<AGROW>
-                    patchLabels{end+1, 1} = sprintf('Subscore %g (%s to %s)', score, ...
-                        formatBound(lower), formatBound(upper)); %#ok<AGROW>
+                        'HandleVisibility', 'off'); %#ok<AGROW>
+                    patchHandles(end).HitTest = 'off';
+                    patchHandles(end).PickableParts = 'none';
+                    labelText = sprintf('%g (%s to %s)', score, formatBound(lower), formatBound(upper));
+                    patchLabels{end+1, 1} = colorizeLegendText(bandColor, labelText); %#ok<AGROW>
+                    patchColors{end+1, 1} = bandColor; %#ok<AGROW>
                 end
             case 'scores'
                 scores = threshold.scores;
@@ -902,8 +1458,12 @@ onViewChanged();
                             bandColor, ...
                             'EdgeColor', 'none', ...
                             'FaceAlpha', 0.32, ...
-                            'HandleVisibility', 'on'); %#ok<AGROW>
-                        patchLabels{end+1, 1} = sprintf('Subscore %s', formatNumeric(scores(idx))); %#ok<AGROW>
+                            'HandleVisibility', 'off'); %#ok<AGROW>
+                        patchHandles(end).HitTest = 'off';
+                        patchHandles(end).PickableParts = 'none';
+                        labelText = sprintf('%s', formatNumeric(scores(idx)));
+                        patchLabels{end+1, 1} = colorizeLegendText(bandColor, labelText); %#ok<AGROW>
+                        patchColors{end+1, 1} = bandColor; %#ok<AGROW>
                     end
                 end
                 for idx = 2:numel(boundaries) - 1
@@ -911,7 +1471,9 @@ onViewChanged();
                     scoreRight = scores(idx);
                     midScore = (scoreLeft + scoreRight) / 2;
                     lineColor = darkenColor(scoreToColor(midScore, minScore, maxScore), 0.65);
-                    yline(ax, boundaries(idx), '--', 'Color', lineColor, 'LineWidth', 1, 'HandleVisibility', 'off');
+                    boundaryLine = yline(ax, boundaries(idx), '--', 'Color', lineColor, 'LineWidth', 1, 'HandleVisibility', 'off');
+                    boundaryLine.HitTest = 'off';
+                    boundaryLine.PickableParts = 'none';
                 end
         end
 
@@ -958,6 +1520,97 @@ onViewChanged();
             else
                 color = (1 - frac) * stops(idxLow, :) + frac * stops(idxHigh, :);
             end
+        end
+    end
+
+    function textColored = colorizeLegendText(~, labelText)
+        if nargin < 2 || isempty(labelText)
+            labelText = '';
+        end
+        textColored = labelText;
+    end
+
+    function renderLegendEntries(panel, labels, colors)
+        if isempty(panel) || ~isgraphics(panel)
+            return;
+        end
+        delete(panel.Children);
+        if nargin < 2 || isempty(labels)
+            panel.Visible = 'off';
+            return;
+        end
+        panel.Visible = 'on';
+        if nargin < 3 || isempty(colors)
+            colors = cell(size(labels));
+        end
+        nLabels = numel(labels);
+        totalRows = nLabels + 1;
+        gridLegend = uigridlayout(panel, [totalRows 1], ...
+            'RowSpacing', 4, ...
+            'Padding', [4 6 4 6], ...
+            'RowHeight', [{'fit'}, repmat({'fit'}, 1, nLabels)], ...
+            'ColumnWidth', {'1x'});
+        if isprop(gridLegend, 'BackgroundColor')
+            gridLegend.BackgroundColor = panel.BackgroundColor;
+        end
+        panelBg = [1 1 1];
+        if isprop(panel, 'BackgroundColor')
+            panelBg = panel.BackgroundColor;
+        end
+        if numel(panelBg) ~= 3
+            panelBg = [1 1 1];
+        end
+        legendAlpha = 0.32;
+        titleLabel = uilabel(gridLegend, ...
+            'Text', 'RULA Subscores', ...
+            'HorizontalAlignment', 'center', ...
+            'FontWeight', 'normal', ...
+            'FontSize', 11, ...
+            'BackgroundColor', 'none', ...
+            'FontColor', [0 0 0]);
+        titleLabel.Layout.Row = 1;
+        titleLabel.Layout.Column = 1;
+
+        for lblIdx = 1:nLabels
+            textValue = labels{lblIdx};
+            if isempty(textValue)
+                textValue = '';
+            end
+            bgColor = panelBg;
+            if lblIdx <= numel(colors) && ~isempty(colors{lblIdx}) && numel(colors{lblIdx}) == 3
+                candidate = colors{lblIdx};
+                if isnumeric(candidate)
+                    candidate = double(candidate(:).');
+                    if numel(candidate) == 3
+                        candidate = max(0, min(1, candidate));
+                        bgColor = (1 - legendAlpha) * panelBg + legendAlpha * candidate;
+                    end
+                end
+            end
+            swatchPanel = uipanel(gridLegend, ...
+                'BorderType', 'none', ...
+                'BackgroundColor', bgColor);
+            swatchPanel.Layout.Row = lblIdx + 1;
+            swatchPanel.Layout.Column = 1;
+            swatchGrid = uigridlayout(swatchPanel, [1 1], ...
+                'RowSpacing', 0, ...
+                'ColumnSpacing', 0, ...
+                'Padding', [4 4 4 4], ...
+                'RowHeight', {'fit'}, ...
+                'ColumnWidth', {'1x'});
+            if isprop(swatchGrid, 'BackgroundColor')
+                swatchGrid.BackgroundColor = bgColor;
+            end
+            entry = uilabel(swatchGrid, ...
+                'Text', textValue, ...
+                'HorizontalAlignment', 'center', ...
+                'WordWrap', 'on', ...
+                'BackgroundColor', 'none', ...
+                'FontColor', [0 0 0], ...
+                'FontSize', 10, ...
+                'FontWeight', 'normal');
+            entry.Layout.Row = 1;
+            entry.Layout.Column = 1;
         end
     end
 
@@ -1058,6 +1711,78 @@ onViewChanged();
         idx(idx > n) = n;
         tOut = tBase(idx);
         vOut = vBase(idx);
+    end
+
+    function state = createPlaybackState()
+        state = struct(...
+            'HasVideo', false, ...
+            'Reader', [], ...
+            'VideoPath', '', ...
+            'VideoFrameRate', 0, ...
+            'Duration', 0, ...
+            'DataDuration', 0, ...
+            'TotalDuration', 0, ...
+            'Speed', 1.0, ...
+            'IsPlaying', false, ...
+            'Timer', [], ...
+            'CurrentTime', 0, ...
+            'LastTick', [], ...
+            'InternalUpdate', false, ...
+            'TimeVector', [], ...
+            'HasError', false);
+    end
+
+    function tf = isvalidVideoReader(reader)
+        tf = isa(reader, 'VideoReader');
+    end
+
+    function onFigureClosed()
+        pausePlaybackTimer();
+        if ~isempty(app.Playback.Timer) && isvalid(app.Playback.Timer)
+            delete(app.Playback.Timer);
+        end
+        app.Playback.Timer = [];
+        delete(app.Fig);
+    end
+
+    function key = normalizeVideoKey(name)
+        if nargin == 0 || isempty(name)
+            key = '';
+            return;
+        end
+        if isstring(name)
+            name = char(name);
+        end
+        if ~ischar(name)
+            key = '';
+            return;
+        end
+        lowered = lower(name);
+        cleaned = regexprep(lowered, '[^a-z0-9]', '');
+        lenSuffix = length('processed');
+        if length(cleaned) >= lenSuffix && strcmp(cleaned(end-lenSuffix+1:end), 'processed')
+            cleaned = cleaned(1:end-lenSuffix);
+        end
+        key = cleaned;
+    end
+
+    function trimmed = stripSuffixIgnoreCase(text, suffix)
+        if isempty(text) || isempty(suffix)
+            trimmed = text;
+            return;
+        end
+        lenText = length(text);
+        lenSuffix = length(suffix);
+        if lenText < lenSuffix
+            trimmed = text;
+            return;
+        end
+        tail = text(lenText-lenSuffix+1:lenText);
+        if strcmpi(tail, suffix)
+            trimmed = text(1:lenText-lenSuffix);
+        else
+            trimmed = text;
+        end
     end
 
     function name = formatJointName(raw)
