@@ -54,6 +54,13 @@ app.Playback = createPlaybackState();
 app.CursorLines = gobjects(0, 1);
 app.TimeSeriesAxes = gobjects(0, 1);
 app.VideoImageHandle = gobjects(0);
+app.VideoMessage = gobjects(0);
+app.PlaybackSlider = gobjects(0);
+app.PlayPauseButton = gobjects(0);
+app.PlaybackSpeedDropdown = gobjects(0);
+app.PlaybackTimeLabel = gobjects(0);
+app.CursorDrag = struct('Active', false, 'Axis', [], 'Line', [], ...
+    'OriginalMotionFcn', [], 'OriginalUpFcn', [], 'OriginalPointer', '');
 
 app.Fig = uifigure('Name', 'RULA Visualizer', ...
     'Position', [100 100 1200 720]);
@@ -66,8 +73,8 @@ app.MainGrid = uigridlayout(app.Fig, [1 2], ...
 app.ControlPanel = uipanel(app.MainGrid, 'Title', 'Controls');
 app.ControlPanel.Layout.Row = 1;
 app.ControlPanel.Layout.Column = 1;
-app.ControlGrid = uigridlayout(app.ControlPanel, [14 1], ...
-    'RowHeight', {30,30,30,30,30,30,30,30,30,30,30,'1x',30,30}, ...
+app.ControlGrid = uigridlayout(app.ControlPanel, [13 1], ...
+    'RowHeight', {30,30,30,30,30,30,30,30,30,30,'1x',30,30}, ...
     'Padding', [10 10 10 10]);
 
 subjectLabel = uilabel(app.ControlGrid, 'Text', 'Subject Selection:', ...
@@ -119,65 +126,40 @@ else
     app.StepDropdown.Enable = 'off';
 end
 
-app.PlaybackControlGrid = uigridlayout(app.ControlGrid, [1 3], ...
-    'ColumnWidth', {70, 45, '1x'}, ...
-    'ColumnSpacing', 8, ...
-    'Padding', [0 0 0 0]);
-app.PlaybackControlGrid.Layout.Row = 9;
-app.PlayPauseButton = uibutton(app.PlaybackControlGrid, 'Text', 'Play', ...
-    'ButtonPushedFcn', @(src, evt)onPlayPause());
-app.PlayPauseButton.Layout.Column = 1;
-app.PlaybackSpeedLabel = uilabel(app.PlaybackControlGrid, 'Text', 'Speed', ...
-    'HorizontalAlignment', 'right');
-app.PlaybackSpeedLabel.Layout.Column = 2;
-app.PlaybackSpeedDropdown = uidropdown(app.PlaybackControlGrid, ...
-    'Items', {'0.25x','0.5x','0.75x','1x','1.25x','1.5x','2x'}, ...
-    'Value', '1x', ...
-    'ValueChangedFcn', @(src, evt)onPlaybackSpeedChanged());
-app.PlaybackSpeedDropdown.Layout.Column = 3;
-
-app.PlaybackSlider = uislider(app.ControlGrid, ...
-    'Limits', [0 1], ...
-    'Value', 0, ...
-    'ValueChangingFcn', @(src, evt)onPlaybackScrub(evt.Value, true), ...
-    'ValueChangedFcn', @(src, evt)onPlaybackScrub(evt.Value, false));
-app.PlaybackSlider.Layout.Row = 10;
-
-app.PlaybackTimeLabel = uilabel(app.ControlGrid, ...
-    'Text', '00:00 / 00:00 (1.0x)', ...
-    'HorizontalAlignment', 'left');
-app.PlaybackTimeLabel.Layout.Row = 11;
-
 app.MessageLabel = uilabel(app.ControlGrid, ...
     'Text', '', ...
     'HorizontalAlignment', 'left', ...
     'WordWrap', 'on');
-app.MessageLabel.Layout.Row = 12;
+app.MessageLabel.Layout.Row = 9;
 
 app.PlotButton = uibutton(app.ControlGrid, 'Text', 'Generate Plot', ...
     'ButtonPushedFcn', @(src, evt)onPlotRequested());
-app.PlotButton.Layout.Row = 13;
+app.PlotButton.Layout.Row = 10;
 
 app.ExportButton = uibutton(app.ControlGrid, 'Text', 'Save Figure...', ...
     'ButtonPushedFcn', @(src, evt)onExportFigure());
-app.ExportButton.Layout.Row = 14;
+app.ExportButton.Layout.Row = 11;
 
 % Plot area
-app.PlotPanel = uipanel(app.MainGrid, 'Title', 'Visualization');
-app.PlotPanel.Layout.Row = 1;
-app.PlotPanel.Layout.Column = 2;
-app.VisualGrid = uigridlayout(app.PlotPanel, [1 2], ...
+app.VisualGrid = uigridlayout(app.MainGrid, [1 2], ...
     'ColumnWidth', {'2x', '3x'}, ...
     'ColumnSpacing', 10, ...
     'Padding', [10 10 10 10]);
+app.VisualGrid.Layout.Row = 1;
+app.VisualGrid.Layout.Column = 2;
+
 app.VideoPanel = uipanel(app.VisualGrid, 'Title', 'Reference Video');
 app.VideoPanel.Layout.Row = 1;
 app.VideoPanel.Layout.Column = 1;
-app.VideoPanelGrid = uigridlayout(app.VideoPanel, [2 1], ...
-    'RowHeight', {'1x', 35}, ...
-    'RowSpacing', 5, ...
-    'Padding', [5 5 5 5]);
-app.VideoAxes = uiaxes(app.VideoPanelGrid, 'Visible', 'off');
+app.VideoPanel.Scrollable = 'off';
+
+app.VideoStack = uigridlayout(app.VideoPanel, [2 1], ...
+    'RowHeight', {'1x', 'fit'}, ...
+    'ColumnSpacing', 0, ...
+    'RowSpacing', 8, ...
+    'Padding', [10 10 10 10]);
+
+app.VideoAxes = uiaxes(app.VideoStack, 'Visible', 'off');
 app.VideoAxes.Layout.Row = 1;
 app.VideoAxes.Layout.Column = 1;
 if isprop(app.VideoAxes, 'Toolbar')
@@ -187,20 +169,40 @@ if isprop(app.VideoAxes, 'Interactions')
     app.VideoAxes.Interactions = [];
 end
 axis(app.VideoAxes, 'off');
-app.VideoMessage = uilabel(app.VideoPanelGrid, ...
-    'Text', 'Select a trial to load video.', ...
+app.VideoMessage = gobjects(0);
+updateVideoMessage('Select a trial to load video.', false);
+
+app.VideoControlPanel = uipanel(app.VideoStack, 'BorderType', 'none');
+app.VideoControlPanel.Layout.Row = 2;
+app.VideoControlPanel.Layout.Column = 1;
+app.VideoControlPanel.Scrollable = 'off';
+app.VideoControlPanel.AutoResizeChildren = 'off';
+
+videoControlGrid = uigridlayout(app.VideoControlPanel, [1 5], ...
+    'ColumnWidth', {'1x', 'fit', 'fit', 'fit', '1x'}, ...
+    'RowHeight', {'fit'}, ...
+    'ColumnSpacing', 12, ...
+    'Padding', [2 12 2 12]);
+
+app.PlaybackSpeedDropdown = uidropdown(videoControlGrid, ...
+    'Items', {'0.25x','0.5x','0.75x','1x','1.25x','1.5x','2x'}, ...
+    'Value', '1x', ...
+    'ValueChangedFcn', @(src, evt)onPlaybackSpeedChanged());
+app.PlaybackSpeedDropdown.Layout.Row = 1;
+app.PlaybackSpeedDropdown.Layout.Column = 2;
+
+app.PlaybackTimeLabel = uilabel(videoControlGrid, ...
+    'Text', '00:00 / 00:00', ...
     'HorizontalAlignment', 'center', ...
     'VerticalAlignment', 'center', ...
     'WordWrap', 'on');
-app.VideoMessage.Layout.Row = 1;
-app.VideoMessage.Layout.Column = 1;
-app.VideoStatusLabel = uilabel(app.VideoPanelGrid, ...
-    'Text', '', ...
-    'HorizontalAlignment', 'center', ...
-    'VerticalAlignment', 'center', ...
-    'WordWrap', 'on');
-app.VideoStatusLabel.Layout.Row = 2;
-app.VideoStatusLabel.Layout.Column = 1;
+app.PlaybackTimeLabel.Layout.Row = 1;
+app.PlaybackTimeLabel.Layout.Column = 3;
+
+app.PlayPauseButton = uibutton(videoControlGrid, 'Text', 'Play', ...
+    'ButtonPushedFcn', @(src, evt)onPlayPause());
+app.PlayPauseButton.Layout.Row = 1;
+app.PlayPauseButton.Layout.Column = 4;
 app.TimeSeriesPanel = uipanel(app.VisualGrid, 'Title', 'Time Series');
 app.TimeSeriesPanel.Layout.Row = 1;
 app.TimeSeriesPanel.Layout.Column = 2;
@@ -356,16 +358,20 @@ onViewChanged();
         app.TimeSeriesPanel.Title = 'Time Series';
         app.TimeSeriesPanel.Title = 'Summary Statistics';
         delete(app.TimeSeriesPanel.Children);
+        resetCursorDragState();
+
         plotGrid = uigridlayout(app.TimeSeriesPanel, [numel(components) + 1, 1], ...
             'Padding', [10 10 10 10]);
         rowHeights = [{40}, repmat({'1x'}, 1, numel(components))];
         plotGrid.RowHeight = rowHeights;
 
+        app.PlaybackSlider = gobjects(0);
+
         titleLabel = uilabel(plotGrid, ...
             'Text', def.Label, ...
             'FontWeight', 'bold', ...
             'HorizontalAlignment', 'center', ...
-            'FontSize', 16);
+            'FontSize', 13);
         titleLabel.Layout.Row = 1;
         titleLabel.Layout.Column = 1;
 
@@ -459,8 +465,9 @@ onViewChanged();
 
             cursor = xline(ax, 0, '--', 'Color', [0.2 0.2 0.2], ...
                 'LineWidth', 1.1, 'HandleVisibility', 'off');
-            cursor.HitTest = 'off';
-            cursor.PickableParts = 'none';
+            cursor.HitTest = 'on';
+            cursor.PickableParts = 'all';
+            cursor.ButtonDownFcn = @(src, evt)onCursorLineDragStart(src, evt, ax);
             cursor.Visible = 'off';
             app.CursorLines(compIdx) = cursor;
         end
@@ -502,6 +509,8 @@ onViewChanged();
         upperScore = prctile(scores, 75);
 
         delete(app.TimeSeriesPanel.Children);
+        app.PlaybackSlider = gobjects(0);
+        resetCursorDragState();
         summaryGrid = uigridlayout(app.TimeSeriesPanel, [2 1], ...
             'RowHeight', {'2x', '1x'}, ...
             'ColumnWidth', {'1x'}, ...
@@ -850,6 +859,7 @@ onViewChanged();
         end
         if isempty(app.VideoImageHandle) || ~isgraphics(app.VideoImageHandle)
             cla(app.VideoAxes);
+            app.VideoMessage = gobjects(0);
             app.VideoImageHandle = image(app.VideoAxes, frame);
         else
             app.VideoImageHandle.CData = frame;
@@ -859,7 +869,9 @@ onViewChanged();
         app.VideoAxes.XTick = [];
         app.VideoAxes.YTick = [];
         app.VideoAxes.Visible = 'on';
-        app.VideoMessage.Visible = false;
+        if ~isempty(app.VideoMessage) && isgraphics(app.VideoMessage)
+            app.VideoMessage.Visible = 'off';
+        end
         drawnow limitrate;
     end
 
@@ -872,33 +884,71 @@ onViewChanged();
             cla(app.VideoAxes);
             app.VideoAxes.Visible = 'off';
         end
-        if isgraphics(app.VideoMessage)
-            app.VideoMessage.Visible = true;
-        end
+        app.VideoMessage = gobjects(0);
+        updateVideoMessage('Select a trial to load video.', false);
     end
 
     function updateVideoMessage(msg, isError)
-        if isempty(app.VideoMessage) || ~isgraphics(app.VideoMessage)
-            return;
-        end
         if nargin < 2
             isError = false;
         end
-        if isempty(strtrim(msg))
-            app.VideoMessage.Visible = false;
-        else
-            app.VideoMessage.Visible = 'on';
-            app.VideoMessage.Text = msg;
-            if isError
-                app.VideoMessage.FontColor = [0.72 0.18 0.14];
-            else
-                app.VideoMessage.FontColor = [0.25 0.25 0.25];
+        msg = string(msg);
+        msg = strtrim(msg);
+        msgJoined = strjoin(msg, newline);
+        if all(msgJoined == "")
+            if ~isempty(app.VideoMessage) && isgraphics(app.VideoMessage)
+                app.VideoMessage.Visible = 'off';
             end
+        else
+            ensureVideoMessage();
+            app.VideoMessage.String = char(msgJoined);
+            if isError
+                app.VideoMessage.Color = [0.72 0.18 0.14];
+            else
+                app.VideoMessage.Color = [0.25 0.25 0.25];
+            end
+            app.VideoMessage.Visible = 'on';
         end
-        if isempty(strtrim(msg)) && app.Playback.HasVideo
+        if all(msgJoined == "") && app.Playback.HasVideo
             app.VideoAxes.Visible = 'on';
-        elseif ~app.Playback.HasVideo
+        elseif any(msgJoined ~= "") && ~app.Playback.HasVideo
             app.VideoAxes.Visible = 'off';
+        end
+        alignVideoMessage();
+    end
+
+    function alignVideoMessage()
+        if isempty(app.VideoMessage) || ~isgraphics(app.VideoMessage)
+            return;
+        end
+        try
+            app.VideoMessage.Units = 'normalized';
+        app.VideoMessage.Position = [0.5 0.5 0];
+            uistack(app.VideoMessage, 'top');
+        catch
+        end
+    end
+
+    function ensureVideoMessage()
+        if isempty(app.VideoMessage) || ~isgraphics(app.VideoMessage)
+            if isempty(app.VideoAxes) || ~isgraphics(app.VideoAxes)
+                return;
+            end
+            holdState = ishold(app.VideoAxes);
+            hold(app.VideoAxes, 'on');
+            app.VideoMessage = text(app.VideoAxes, 0.5, 0.5, '', ...
+                'Units', 'normalized', ...
+                'HorizontalAlignment', 'center', ...
+                'VerticalAlignment', 'middle', ...
+                'HitTest', 'off', ...
+                'FontWeight', 'bold', ...
+                'Color', [0.25 0.25 0.25], ...
+                'Interpreter', 'none', ...
+                'Visible', 'off');
+            if ~holdState
+                hold(app.VideoAxes, 'off');
+            end
+            alignVideoMessage();
         end
     end
 
@@ -1030,12 +1080,11 @@ onViewChanged();
     function updatePlaybackTimeLabel()
         total = app.Playback.TotalDuration;
         current = app.Playback.CurrentTime;
-        speed = app.Playback.Speed;
         if isempty(app.PlaybackTimeLabel) || ~isgraphics(app.PlaybackTimeLabel)
             return;
         end
-        app.PlaybackTimeLabel.Text = sprintf('%s / %s (%.2fx)', ...
-            formatTime(current), formatTime(total), speed);
+        app.PlaybackTimeLabel.Text = sprintf('%s / %s', ...
+            formatTime(current), formatTime(total));
     end
 
     function updatePlayButtonText()
@@ -1058,20 +1107,178 @@ onViewChanged();
         text = sprintf('%02d:%02d', minutes, secs);
     end
 
-    function onAxisClicked(~, evt)
-        if isempty(evt) || ~isfield(evt, 'IntersectionPoint') || isempty(evt.IntersectionPoint)
+    function onAxisClicked(ax, evt)
+        if nargin < 1 || isempty(ax) || ~isgraphics(ax)
+            ax = [];
+        end
+        processTimeSelection(evt, ax);
+        beginDragSession(ax, [], evt);
+    end
+
+    function onCursorLineDragStart(lineObj, evt, ax)
+        if nargin < 3 || isempty(ax) || ~isgraphics(ax)
+            if ~isempty(lineObj) && isgraphics(lineObj)
+                ax = ancestor(lineObj, 'matlab.ui.control.UIAxes');
+            else
+                return;
+            end
+        end
+        if isempty(ax) || ~isgraphics(ax)
             return;
         end
-        timeSec = evt.IntersectionPoint(1);
-        if ~isfinite(timeSec)
+        beginDragSession(ax, lineObj, evt);
+    end
+
+    function onCursorLineDragMove(~, ~)
+        if ~app.CursorDrag.Active
             return;
         end
+        ax = app.CursorDrag.Axis;
+        if isempty(ax) || ~isgraphics(ax)
+            resetCursorDragState();
+            return;
+        end
+        currentTime = resolveAxisTime(ax, [], getLineValue(app.CursorDrag.Line));
+        setPlaybackTime(currentTime, 'source', 'cursor');
+    end
+
+    function onCursorLineDragEnd(~, ~)
+        if ~app.CursorDrag.Active
+            resetCursorDragState();
+            return;
+        end
+        ax = app.CursorDrag.Axis;
+        timeSec = resolveAxisTime(ax, [], getLineValue(app.CursorDrag.Line));
+        setPlaybackTime(timeSec, 'source', 'cursor');
+        resetCursorDragState();
+    end
+
+    function beginDragSession(ax, lineObj, evt)
+        if app.CursorDrag.Active
+            resetCursorDragState();
+        end
+
+        targetTime = resolveAxisTime(ax, evt, getLineValue(lineObj));
         pausePlaybackTimer();
-        setPlaybackTime(timeSec, 'source', 'axis');
+
+        app.CursorDrag.Active = true;
+        app.CursorDrag.Axis = ax;
+        app.CursorDrag.Line = lineObj;
+        if isgraphics(app.Fig)
+            app.CursorDrag.OriginalMotionFcn = app.Fig.WindowButtonMotionFcn;
+            app.CursorDrag.OriginalUpFcn = app.Fig.WindowButtonUpFcn;
+            if isprop(app.Fig, 'Pointer')
+                app.CursorDrag.OriginalPointer = app.Fig.Pointer;
+                app.Fig.Pointer = 'hand';
+            else
+                app.CursorDrag.OriginalPointer = '';
+            end
+            app.Fig.WindowButtonMotionFcn = @(src, evt)onCursorLineDragMove();
+            app.Fig.WindowButtonUpFcn = @(src, evt)onCursorLineDragEnd();
+        end
+
+        setPlaybackTime(targetTime, 'source', 'cursor');
     end
 
     function onStepChanged(~, ~)
         % Placeholder for future interactive behaviour.
+    end
+
+    function resetCursorDragState()
+        if ~isfield(app, 'CursorDrag') || isempty(app.CursorDrag)
+            app.CursorDrag = struct('Active', false, 'Axis', [], 'Line', [], ...
+                'OriginalMotionFcn', [], 'OriginalUpFcn', [], 'OriginalPointer', '');
+            return;
+        end
+        if isgraphics(app.Fig)
+            if ~isempty(app.CursorDrag.OriginalMotionFcn)
+                app.Fig.WindowButtonMotionFcn = app.CursorDrag.OriginalMotionFcn;
+            else
+                app.Fig.WindowButtonMotionFcn = [];
+            end
+            if ~isempty(app.CursorDrag.OriginalUpFcn)
+                app.Fig.WindowButtonUpFcn = app.CursorDrag.OriginalUpFcn;
+            else
+                app.Fig.WindowButtonUpFcn = [];
+            end
+            if isprop(app.Fig, 'Pointer')
+                if ~isempty(app.CursorDrag.OriginalPointer)
+                    app.Fig.Pointer = app.CursorDrag.OriginalPointer;
+                else
+                    app.Fig.Pointer = 'arrow';
+                end
+            end
+        end
+        app.CursorDrag.Active = false;
+        app.CursorDrag.Axis = [];
+        app.CursorDrag.Line = [];
+        app.CursorDrag.OriginalMotionFcn = [];
+        app.CursorDrag.OriginalUpFcn = [];
+        app.CursorDrag.OriginalPointer = '';
+    end
+
+    function timeSec = resolveAxisTime(ax, evt, fallbackValue)
+        timeSec = NaN;
+        if nargin < 3 || isempty(fallbackValue) || ~isfinite(fallbackValue)
+            fallbackValue = 0;
+        end
+        if nargin >= 2 && ~isempty(evt) && isstruct(evt) && isfield(evt, 'IntersectionPoint')
+            ip = evt.IntersectionPoint;
+            if ~isempty(ip)
+                timeSec = ip(1);
+            end
+        end
+        if ~isfinite(timeSec)
+            if ~isempty(ax) && isgraphics(ax)
+                cp = ax.CurrentPoint;
+                if ~isempty(cp)
+                    timeSec = cp(1, 1);
+                end
+            end
+        end
+        if ~isfinite(timeSec)
+            timeSec = fallbackValue;
+        end
+        if ~isempty(ax) && isgraphics(ax)
+            lims = ax.XLim;
+            if numel(lims) == 2
+                timeSec = min(max(timeSec, min(lims)), max(lims));
+            end
+        end
+        if ~isfinite(timeSec)
+            timeSec = 0;
+        end
+        if timeSec < 0
+            timeSec = 0;
+        end
+    end
+
+    function processTimeSelection(evt, ax)
+        if nargin < 2
+            ax = [];
+        end
+        if nargin >= 1 && ~isempty(evt) && isempty(ax)
+            try
+                srcAx = evt.Source;
+                if isgraphics(srcAx)
+                    ax = srcAx;
+                end
+            catch
+            end
+        end
+        pausePlaybackTimer();
+        timeSec = resolveAxisTime(ax, evt, app.Playback.CurrentTime);
+        setPlaybackTime(timeSec, 'source', 'click');
+    end
+
+    function value = getLineValue(lineObj)
+        value = 0;
+        if isempty(lineObj) || ~isgraphics(lineObj)
+            return;
+        end
+        if isprop(lineObj, 'Value')
+            value = lineObj.Value;
+        end
     end
 
     function def = getStepDefinition(stepKey)
@@ -1738,6 +1945,7 @@ onViewChanged();
 
     function onFigureClosed()
         pausePlaybackTimer();
+        resetCursorDragState();
         if ~isempty(app.Playback.Timer) && isvalid(app.Playback.Timer)
             delete(app.Playback.Timer);
         end
