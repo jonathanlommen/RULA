@@ -14,10 +14,13 @@ function run_all_trials(varargin)
 %   file is created automatically before writing.
 %
 %   Optional name/value arguments:
-%       'launchVisualizer' (logical, default false) – open the interactive GUI
+%       'launchVisualizer' (logical, default true) – open the interactive GUI
 %           (RULA_Visualizer) after processing completes.
+%       'backupSurgeonDB' (logical, default false) – create a timestamped copy
+%           of Surgeon_db.xlsx before it is modified.
 
 launchVisualizer = true;
+backupSurgeon = false;
 if ~isempty(varargin)
     if mod(numel(varargin), 2) ~= 0
         error('run_all_trials:InvalidArgs', ...
@@ -29,6 +32,8 @@ if ~isempty(varargin)
         switch name
             case "launchvisualizer"
                 launchVisualizer = logical(value);
+            case "backupsurgeondb"
+                backupSurgeon = logical(value);
             otherwise
                 error('run_all_trials:UnknownOption', ...
                     'Unrecognised option "%s".', varargin{argIdx});
@@ -49,10 +54,10 @@ if ~isfolder(scriptsDir)
     fprintf('Extracting skripts.zip to %s\n', repoRoot);
     unzip(zipPath, repoRoot);
 end
-addpath(scriptsDir);
+addPathIfMissing(scriptsDir);
 spmDir = fullfile(scriptsDir, 'spm1dmatlab-master');
 if isfolder(spmDir)
-    addpath(genpath(spmDir));
+    addPathIfMissing(spmDir, true);
 end
 ensureStandingLegScore(scriptsDir);
 
@@ -138,7 +143,9 @@ Subject_db = table(uniqueSubjects(:), repmat({'unknown'}, numel(uniqueSubjects),
 
 % 4) Run the core RULA computation.
 cleanupCaches(repoRoot);
-backupSurgeonDB(repoRoot);
+if backupSurgeon
+    backupSurgeonDB(repoRoot);
+end
 
 if exist('MF_02SelectAndRULA_v01', 'file')
     [ConditionTable_loaded, Data, Settings] = MF_02SelectAndRULA_v01( ...
@@ -178,6 +185,33 @@ if launchVisualizer && exist(fullfile(repoRoot, 'RULA_Visualizer.m'), 'file')
             'Unable to launch RULA_Visualizer automatically: %s', ME.message);
     end
 end
+end
+
+function addPathIfMissing(dirPath, includeSubDirs)
+% Add a folder (optionally with subfolders) to the MATLAB path if absent.
+if nargin < 2
+    includeSubDirs = false;
+end
+if ~isfolder(dirPath)
+    return;
+end
+dirPath = char(dirPath);
+target = normalizePath(dirPath);
+existing = strsplit(path, pathsep);
+existing = cellfun(@normalizePath, existing, 'UniformOutput', false);
+if any(strcmpi(existing, target))
+    return;
+end
+if includeSubDirs
+    addpath(genpath(dirPath));
+else
+    addpath(dirPath);
+end
+end
+
+function out = normalizePath(p)
+out = char(p);
+out = regexprep(out, '[\\/]+$', '');
 end
 
 function cleanupCaches(repoRoot)

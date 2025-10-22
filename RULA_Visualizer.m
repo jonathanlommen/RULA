@@ -17,10 +17,9 @@ if ~isfile(dataFile)
         'Could not locate Project_data_v01.mat in %s. Run run_all_trials first.', repoRoot);
 end
 
-loaded = load(dataFile, 'ConditionTable_loaded', 'Data', 'Settings');
+loaded = load(dataFile, 'ConditionTable_loaded', 'Settings');
 ConditionTable = loaded.ConditionTable_loaded;
 Settings = loaded.Settings;
-Data = loaded.Data;
 
 subjectIDs = string(ConditionTable.SubjectID);
 trialNames = string(ConditionTable.Filename);
@@ -40,7 +39,6 @@ app = struct();
 app.RepoRoot = repoRoot;
 app.ConditionTable = ConditionTable;
 app.Settings = Settings;
-app.Data = Data;
 app.JointNames = jointNames;
 app.DimensionNames = dimensionNames;
 app.SubjectIDs = subjectIDs;
@@ -50,6 +48,8 @@ thresholds = RULA_visualization_thresholds();
 app.Thresholds = thresholds;
 app.StepDefinitions = buildStepDefinitions(Settings);
 app.VideoDir = fullfile(repoRoot, 'ReferenceVideos');
+app.VideoLibrary = buildVideoLibrary(app.VideoDir);
+app.TrialCache = containers.Map('KeyType','char','ValueType','any');
 app.Playback = createPlaybackState();
 app.CursorLines = gobjects(0, 1);
 app.TimeSeriesAxes = gobjects(0, 1);
@@ -171,7 +171,7 @@ app.VideoStack = uigridlayout(app.VideoPanel, [2 1], ...
     'RowHeight', {'1x', 'fit'}, ...
     'ColumnSpacing', 0, ...
     'RowSpacing', 6, ...
-    'Padding', [6 6 6 6];
+    'Padding', [6 6 6 6]);
 
 app.VideoAxes = uiaxes(app.VideoStack, 'Visible', 'off');
 app.VideoAxes.Layout.Row = 1;
@@ -207,7 +207,6 @@ app.PlaybackSpeedDropdown.Layout.Column = 2;
 app.PlaybackTimeLabel = uilabel(videoControlGrid, ...
     'Text', '00:00 / 00:00', ...
     'HorizontalAlignment', 'center', ...
-    , ...
     'WordWrap', 'on');
 app.PlaybackTimeLabel.Layout.Row = 1;
 app.PlaybackTimeLabel.Layout.Column = 3;
@@ -329,38 +328,22 @@ onViewChanged();
         end
 
         trialName = string(app.TrialDropdown.Value);
-        processedPath = fullfile(app.RepoRoot, '04_Processed', ...
-            sprintf('%s_processed.mat', erase(trialName, ".mat")));
-        if ~isfile(processedPath)
-            error('RULA_Visualizer:MissingProcessed', ...
-                'Processed file not found: %s', processedPath);
-        end
+        trialKey = char(trialName);
+        trialData = getProcessedTrial(trialKey);
 
-        loadedTrial = load(processedPath, 'Data_tmp', 'Subject_tmp', 'rula');
-        if ~isfield(loadedTrial, 'Data_tmp')
-            error('RULA_Visualizer:MissingDataTmp', ...
-                'Data_tmp missing in %s. Re-run the pipeline.', processedPath);
-        end
-        if ~isfield(loadedTrial, 'rula')
-            error('RULA_Visualizer:MissingRula', ...
-                'RULA struct missing in %s. Re-run the pipeline.', processedPath);
-        end
-
-        Data_tmp = loadedTrial.Data_tmp;
-        if isfield(loadedTrial, 'Subject_tmp')
-            Subject_tmp = loadedTrial.Subject_tmp;
-        else
-            Subject_tmp = struct();
-        end
-        rula = loadedTrial.rula;
-
-        timeSeconds = deriveTimeVector(Data_tmp, Subject_tmp);
-        ctx = struct('Data', Data_tmp, ...
-            'Subject', Subject_tmp, ...
-            'Rula', rula, ...
+        ctx = struct('Data', trialData.Data, ...
+            'Subject', trialData.Subject, ...
+            'Rula', trialData.Rula, ...
             'Settings', app.Settings);
+        if ~isfield(trialData, 'TimeSeconds') || isempty(trialData.TimeSeconds)
+            timeCalc = deriveTimeVector(trialData.Data, trialData.Subject);
+            trialData.TimeSeconds = ensureColumn(timeCalc);
+        end
+        timeSeconds = trialData.TimeSeconds;
 
-        components = computeStepComponents(def, ctx);
+        [components, trialData] = getOrComputeStepComponents(trialData, def, ctx);
+        app.TrialCache(trialKey) = trialData;
+
         if isempty(components)
             error('RULA_Visualizer:NoComponents', ...
                 'No time-series data are available for %s.', def.Label);
@@ -369,7 +352,6 @@ onViewChanged();
         maxPlotPoints = 6000;
 
         app.TimeSeriesPanel.Title = 'Time Series';
-        app.TimeSeriesPanel.Title = 'Summary Statistics';
         delete(app.TimeSeriesPanel.Children);
         resetCursorDragState();
 
@@ -493,18 +475,8 @@ onViewChanged();
 
     function plotSummary()
         trialName = string(app.TrialDropdown.Value);
-        processedPath = fullfile(app.RepoRoot, '04_Processed', ...
-            sprintf('%s_processed.mat', erase(trialName, ".mat")));
-        if ~isfile(processedPath)
-            error('RULA_Visualizer:MissingProcessed', ...
-                'Processed file not found: %s', processedPath);
-        end
-        loadedTrial = load(processedPath, 'rula');
-        if ~isfield(loadedTrial, 'rula')
-            error('RULA_Visualizer:MissingRula', ...
-                'RULA struct missing in %s. Re-run the pipeline.', processedPath);
-        end
-        rula = loadedTrial.rula;
+        trialData = getProcessedTrial(char(trialName));
+        rula = trialData.Rula;
         if ~isfield(rula, 's15_neck_trunk_leg_score')
             error('RULA_Visualizer:MissingStep15', ...
                 'Step 15 results not found for trial %s.', trialName);
@@ -572,12 +544,11 @@ onViewChanged();
         title(axHist, 'Overall RULA Score Distribution');
         ylim(axHist, [0 upperPerc]);
 
-        legendEntries = {
-            '1-2 Acceptable', colorAcceptable;
-            '3-4 Investigate further', colorInvestigate;
-            '5-6 Investigate/change soon', colorChangeSoon;
-            '7 Immediate action', colorImmediate}
-            ;
+        legendEntries = { ...
+            '1-2 Acceptable', colorAcceptable; ...
+            '3-4 Investigate further', colorInvestigate; ...
+            '5-6 Investigate/change soon', colorChangeSoon; ...
+            '7 Immediate action', colorImmediate};
         legendHandles = gobjects(size(legendEntries,1),1);
         for idx = 1:size(legendEntries,1)
             legendHandles(idx) = plot(axHist, NaN, NaN, 's', ...
@@ -585,7 +556,8 @@ onViewChanged();
                 'MarkerEdgeColor', 'none', 'LineStyle', 'none', 'MarkerSize', 9);
         end
         leg = legend(axHist, legendHandles, legendEntries(:,1), ...
-            'Location', 'northwest', 'Interpreter', 'none', 'Box', 'on');
+            'Location', 'northoutside', 'Interpreter', 'none', ...
+            'Box', 'on', 'Orientation', 'horizontal');
         if ~isempty(leg) && isvalid(leg)
             leg.Title.String = 'Ergonomic Risk';
             leg.ItemTokenSize = [18 9];
@@ -687,14 +659,21 @@ onViewChanged();
         app.Playback.Duration = 0;
         app.Playback.VideoFrameRate = 0;
         app.Playback.HasError = false;
+        resetVideoCache();
 
         if nargin < 1 || isempty(trialKey)
             updateVideoMessage('Select a trial to load video.', false);
             return;
         end
-        if ~isfolder(app.VideoDir)
-            updateVideoMessage('ReferenceVideos folder not found.', true);
-            return;
+
+        library = app.VideoLibrary;
+        if library.MissingFolder
+            app.VideoLibrary = buildVideoLibrary(app.VideoDir);
+            library = app.VideoLibrary;
+            if library.MissingFolder
+                updateVideoMessage('ReferenceVideos folder not found.', true);
+                return;
+            end
         end
 
         baseName = char(trialKey);
@@ -721,51 +700,32 @@ onViewChanged();
             return;
         end
 
-        dirEntries = [dir(fullfile(app.VideoDir, '*.mp4')); dir(fullfile(app.VideoDir, '*.MP4'))];
-        if isempty(dirEntries)
-            updateVideoMessage('No reference video available for this trial.', false);
-            return;
+        if isempty(library.Keys)
+            app.VideoLibrary = buildVideoLibrary(app.VideoDir);
+            library = app.VideoLibrary;
+            if library.MissingFolder
+                updateVideoMessage('ReferenceVideos folder not found.', true);
+                return;
+            end
+            if isempty(library.Keys)
+                updateVideoMessage('No reference video available for this trial.', false);
+                return;
+            end
         end
 
-        videoPath = '';
-        for idx = 1:numel(dirEntries)
-            entry = dirEntries(idx);
-            if entry.isdir
-                continue;
+        videoPath = findVideoMatch(library, targetKeys);
+        if isempty(videoPath)
+            app.VideoLibrary = buildVideoLibrary(app.VideoDir);
+            library = app.VideoLibrary;
+            if library.MissingFolder
+                updateVideoMessage('ReferenceVideos folder not found.', true);
+                return;
             end
-            fileName = entry.name;
-            [~, nameOnly, ext] = fileparts(fileName);
-            if ~ismember(lower(ext), {'.mp4'})
-                continue;
+            if isempty(library.Keys)
+                updateVideoMessage('No reference video available for this trial.', false);
+                return;
             end
-            candidateVariants = {nameOnly, ...
-                stripSuffixIgnoreCase(nameOnly, '_processed'), ...
-                stripSuffixIgnoreCase(nameOnly, '-processed')};
-            candidateKeys = {};
-            for cvIdx = 1:numel(candidateVariants)
-                candidateVariant = candidateVariants{cvIdx};
-                if isempty(candidateVariant)
-                    continue;
-                end
-                key = normalizeVideoKey(candidateVariant);
-                if isempty(key)
-                    continue;
-                end
-                if ~any(strcmp(candidateKeys, key))
-                    candidateKeys{end+1} = key; %#ok<AGROW>
-                end
-            end
-            matchFound = false;
-            for ckIdx = 1:numel(candidateKeys)
-                if any(strcmp(targetKeys, candidateKeys{ckIdx}))
-                    matchFound = true;
-                    break;
-                end
-            end
-            if matchFound
-                videoPath = fullfile(entry.folder, entry.name);
-                break;
-            end
+            videoPath = findVideoMatch(library, targetKeys);
         end
         if isempty(videoPath)
             updateVideoMessage('No reference video available for this trial.', false);
@@ -784,6 +744,9 @@ onViewChanged();
         app.Playback.VideoPath = videoPath;
         app.Playback.Duration = max(0, reader.Duration);
         app.Playback.VideoFrameRate = reader.FrameRate;
+        desiredPeriod = 1 / max(reader.FrameRate, 1);
+        app.Playback.TimerPeriod = min(max(desiredPeriod, 0.01), 0.06);
+        resetVideoCache();
         app.Playback.CurrentTime = 0;
         updateVideoFrame(0);
         updateVideoMessage('', false);
@@ -859,17 +822,59 @@ onViewChanged();
         if ~isvalidVideoReader(reader)
             updateVideoMessage('Video reader became invalid.', true);
             app.Playback.HasVideo = false;
+            resetVideoCache();
             return;
         end
-        frameTime = min(max(timeSec, 0), max(reader.Duration - (1 / max(reader.FrameRate, 30)), 0));
-        try
-            reader.CurrentTime = frameTime;
-            frame = readFrame(reader);
-        catch ME
-            updateVideoMessage(sprintf('Unable to read video frame: %s', ME.message), true);
-            app.Playback.HasVideo = false;
+        fps = max(reader.FrameRate, 1);
+        maxIndex = max(1, ceil(reader.Duration * fps));
+        targetIdx = max(1, min(maxIndex, floor(double(timeSec) * fps) + 1));
+
+        cache = ensureVideoCache();
+        [cachedFrame, hit] = fetchFrameFromCache(cache, targetIdx);
+        frame = cachedFrame;
+        usedCacheFrame = hit;
+
+        if ~hit
+            lastIdx = app.Playback.VideoLastIndex;
+            sequential = ~isnan(lastIdx) && (targetIdx == lastIdx + 1);
+            if sequential
+                try
+                    frame = readFrame(reader);
+                    hit = true;
+                    usedCacheFrame = false;
+                catch
+                    sequential = false;
+                end
+            end
+            if ~sequential
+                seekTime = (targetIdx - 1) / fps;
+                seekTime = min(max(seekTime, 0), max(reader.Duration - (1 / fps), 0));
+                try
+                    reader.CurrentTime = seekTime;
+                    frame = readFrame(reader);
+                    hit = true;
+                    usedCacheFrame = false;
+                catch ME
+                    updateVideoMessage(sprintf('Unable to read video frame: %s', ME.message), true);
+                    app.Playback.HasVideo = false;
+                    app.Playback.Reader = [];
+                    resetVideoCache();
+                    return;
+                end
+            end
+            if hit
+                cache = storeFrameInCache(cache, targetIdx, frame);
+                app.Playback.VideoCache = cache;
+            end
+        end
+
+        if isempty(frame)
             return;
         end
+
+        app.Playback.VideoLastIndex = targetIdx;
+        app.Playback.VideoLastTime = (targetIdx - 1) / fps;
+
         if isempty(app.VideoImageHandle) || ~isgraphics(app.VideoImageHandle)
             cla(app.VideoAxes);
             app.VideoMessage = gobjects(0);
@@ -885,7 +890,14 @@ onViewChanged();
         if ~isempty(app.VideoMessage) && isgraphics(app.VideoMessage)
             app.VideoMessage.Visible = 'off';
         end
-        drawnow limitrate;
+        if usedCacheFrame
+            nextTime = min((targetIdx) / fps, max(reader.Duration - (1 / fps), 0));
+            try
+                reader.CurrentTime = nextTime;
+            catch
+            end
+        end
+        drawnow limitrate nocallbacks;
     end
 
     function clearVideoFrame()
@@ -899,6 +911,7 @@ onViewChanged();
         end
         app.VideoMessage = gobjects(0);
         updateVideoMessage('Select a trial to load video.', false);
+        resetVideoCache();
     end
 
     function updateVideoMessage(msg, isError)
@@ -936,7 +949,7 @@ onViewChanged();
         end
         try
             app.VideoMessage.Units = 'normalized';
-        app.VideoMessage.Position = [0.5 0.5 0];
+            app.VideoMessage.Position = [0.5 0.5 0];
             uistack(app.VideoMessage, 'top');
         catch
         end
@@ -980,10 +993,16 @@ onViewChanged();
     end
 
     function startPlaybackTimer()
+        desiredPeriod = max(0.015, min(0.08, app.Playback.TimerPeriod));
         if isempty(app.Playback.Timer) || ~isvalid(app.Playback.Timer)
             app.Playback.Timer = timer('ExecutionMode', 'fixedSpacing', ...
-                'Period', 0.04, ...
+                'Period', desiredPeriod, ...
                 'TimerFcn', @(src, evt)onPlaybackTick(src));
+        else
+            try
+                app.Playback.Timer.Period = desiredPeriod;
+            catch
+            end
         end
         app.Playback.IsPlaying = true;
         app.Playback.LastTick = tic;
@@ -1949,11 +1968,73 @@ onViewChanged();
             'LastTick', [], ...
             'InternalUpdate', false, ...
             'TimeVector', [], ...
-            'HasError', false);
+            'HasError', false, ...
+            'TimerPeriod', 0.04, ...
+            'VideoCache', emptyVideoCache(), ...
+            'VideoLastIndex', NaN, ...
+            'VideoLastTime', NaN);
     end
 
     function tf = isvalidVideoReader(reader)
         tf = isa(reader, 'VideoReader');
+    end
+
+    function cache = emptyVideoCache(maxSize)
+        if nargin < 1 || isempty(maxSize)
+            maxSize = 180;
+        end
+        cache = struct(...
+            'Indices', zeros(0, 1), ...
+            'Frames', {cell(0, 1)}, ...
+            'MaxSize', maxSize);
+    end
+
+    function resetVideoCache()
+        app.Playback.VideoCache = emptyVideoCache();
+        app.Playback.VideoLastIndex = NaN;
+        app.Playback.VideoLastTime = NaN;
+    end
+
+    function cache = ensureVideoCache()
+        if ~isfield(app.Playback, 'VideoCache') || isempty(app.Playback.VideoCache)
+            app.Playback.VideoCache = emptyVideoCache();
+        end
+        cache = app.Playback.VideoCache;
+    end
+
+    function [frame, hit] = fetchFrameFromCache(cache, targetIdx)
+        hit = false;
+        frame = [];
+        if isempty(cache) || ~isfield(cache, 'Indices') || isempty(cache.Indices)
+            return;
+        end
+        pos = find(cache.Indices == targetIdx, 1);
+        if ~isempty(pos)
+            hit = true;
+            frame = cache.Frames{pos};
+        end
+    end
+
+    function cache = storeFrameInCache(cache, targetIdx, frame)
+        if isempty(cache) || ~isfield(cache, 'Indices')
+            cache = emptyVideoCache();
+        end
+        pos = find(cache.Indices == targetIdx, 1);
+        if ~isempty(pos)
+            cache.Frames{pos} = frame;
+            return;
+        end
+        cache.Indices(end+1, 1) = targetIdx;
+        cache.Frames{end+1, 1} = frame;
+        maxSize = cache.MaxSize;
+        if isempty(maxSize) || ~isfinite(maxSize)
+            maxSize = 180;
+        end
+        overflow = numel(cache.Indices) - maxSize;
+        if overflow > 0
+            cache.Indices(1:overflow) = [];
+            cache.Frames(1:overflow) = [];
+        end
     end
 
     function onFigureClosed()
@@ -1964,6 +2045,136 @@ onViewChanged();
         end
         app.Playback.Timer = [];
         delete(app.Fig);
+    end
+
+    function trialData = getProcessedTrial(trialKey)
+        if ~isfield(app, 'TrialCache') || isempty(app.TrialCache)
+            app.TrialCache = containers.Map('KeyType','char','ValueType','any');
+        end
+        if isstring(trialKey)
+            trialKey = char(trialKey);
+        end
+        if isempty(trialKey)
+            error('RULA_Visualizer:NoTrial', ...
+                'Select a trial before generating plots.');
+        end
+        if ~ischar(trialKey)
+            trialKey = char(string(trialKey));
+        end
+        if isKey(app.TrialCache, trialKey)
+            trialData = app.TrialCache(trialKey);
+            return;
+        end
+        trialString = string(trialKey);
+        processedPath = fullfile(app.RepoRoot, '04_Processed', ...
+            sprintf('%s_processed.mat', erase(trialString, ".mat")));
+        if ~isfile(processedPath)
+            error('RULA_Visualizer:MissingProcessed', ...
+                'Processed file not found: %s', processedPath);
+        end
+        loadedTrial = load(processedPath, 'Data_tmp', 'Subject_tmp', 'rula');
+        if ~isfield(loadedTrial, 'Data_tmp')
+            error('RULA_Visualizer:MissingDataTmp', ...
+                'Data_tmp missing in %s. Re-run the pipeline.', processedPath);
+        end
+        if ~isfield(loadedTrial, 'rula')
+            error('RULA_Visualizer:MissingRula', ...
+                'RULA struct missing in %s. Re-run the pipeline.', processedPath);
+        end
+        Data_tmp = loadedTrial.Data_tmp;
+        if isfield(loadedTrial, 'Subject_tmp')
+            Subject_tmp = loadedTrial.Subject_tmp;
+        else
+            Subject_tmp = struct();
+        end
+        rula = loadedTrial.rula;
+        timeSeconds = deriveTimeVector(Data_tmp, Subject_tmp);
+        trialData = struct( ...
+            'Data', Data_tmp, ...
+            'Subject', Subject_tmp, ...
+            'Rula', rula, ...
+            'ProcessedPath', processedPath, ...
+            'TimeSeconds', ensureColumn(timeSeconds), ...
+            'StepCache', containers.Map('KeyType','char','ValueType','any'));
+        app.TrialCache(trialKey) = trialData;
+    end
+
+    function [components, trialData] = getOrComputeStepComponents(trialData, def, ctx)
+        if ~isfield(trialData, 'StepCache') || isempty(trialData.StepCache) || ...
+                ~isa(trialData.StepCache, 'containers.Map')
+            trialData.StepCache = containers.Map('KeyType','char','ValueType','any');
+        end
+        cacheKey = char(def.Key);
+        if isKey(trialData.StepCache, cacheKey)
+            components = trialData.StepCache(cacheKey);
+            return;
+        end
+        components = computeStepComponents(def, ctx);
+        trialData.StepCache(cacheKey) = components;
+    end
+
+    function library = buildVideoLibrary(videoDir)
+        library = struct('Keys', {{}}, 'Paths', {{}}, 'MissingFolder', false);
+        if nargin < 1 || isempty(videoDir)
+            return;
+        end
+        if ~isfolder(videoDir)
+            library.MissingFolder = true;
+            return;
+        end
+        entries = [dir(fullfile(videoDir, '*.mp4')); dir(fullfile(videoDir, '*.MP4'))];
+        if isempty(entries)
+            return;
+        end
+        keys = cell(0, 1);
+        paths = cell(0, 1);
+        for idx = 1:numel(entries)
+            entry = entries(idx);
+            if entry.isdir
+                continue;
+            end
+            [~, nameOnly, ext] = fileparts(entry.name);
+            if ~ismember(lower(ext), {'.mp4'})
+                continue;
+            end
+            candidateVariants = {nameOnly, ...
+                stripSuffixIgnoreCase(nameOnly, '_processed'), ...
+                stripSuffixIgnoreCase(nameOnly, '-processed')};
+            for cvIdx = 1:numel(candidateVariants)
+                candidateVariant = candidateVariants{cvIdx};
+                if isempty(candidateVariant)
+                    continue;
+                end
+                key = normalizeVideoKey(candidateVariant);
+                if isempty(key)
+                    continue;
+                end
+                if ~any(strcmpi(keys, key))
+                    keys{end+1, 1} = key; %#ok<AGROW>
+                    paths{end+1, 1} = fullfile(entry.folder, entry.name); %#ok<AGROW>
+                end
+            end
+        end
+        library.Keys = keys;
+        library.Paths = paths;
+    end
+
+    function videoPath = findVideoMatch(library, targetKeys)
+        videoPath = '';
+        if nargin < 2 || isempty(targetKeys) || ~iscell(targetKeys)
+            return;
+        end
+        if ~isstruct(library) || ~isfield(library, 'Keys') || isempty(library.Keys)
+            return;
+        end
+        for tkIdx = 1:numel(targetKeys)
+            key = targetKeys{tkIdx};
+            idx = find(strcmpi(library.Keys, key), 1);
+            if ~isempty(idx)
+                videoPath = library.Paths{idx};
+                return;
+            end
+        end
     end
 
     function key = normalizeVideoKey(name)
