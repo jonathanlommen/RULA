@@ -59,7 +59,9 @@ app.PlaybackSlider = gobjects(0);
 app.PlayPauseButton = gobjects(0);
 app.PlaybackSpeedDropdown = gobjects(0);
 app.PlaybackTimeLabel = gobjects(0);
-app.CursorDrag = struct('Active', false, 'Axis', [], 'Line', [], ...
+app.CursorDrag = struct('Active', false, 'Pending', false, 'Axis', [], 'Line', [], ...
+    'StartTime', NaN, 'StartFigurePoint', [NaN NaN], ...
+    'MinDragDelta', 0.01, 'PixelThreshold', 6, 'PointerChanged', false, ...
     'OriginalMotionFcn', [], 'OriginalUpFcn', [], 'OriginalPointer', '');
 
 app.Fig = uifigure('Name', 'RULA Visualizer', ...
@@ -745,7 +747,7 @@ onViewChanged();
         app.Playback.Duration = max(0, reader.Duration);
         app.Playback.VideoFrameRate = reader.FrameRate;
         desiredPeriod = 1 / max(reader.FrameRate, 1);
-        app.Playback.TimerPeriod = min(max(desiredPeriod, 0.01), 0.06);
+        app.Playback.TimerPeriod = normalizeTimerPeriod(desiredPeriod, 0.005, 0.3);
         resetVideoCache();
         app.Playback.CurrentTime = 0;
         updateVideoFrame(0);
@@ -780,6 +782,21 @@ onViewChanged();
     end
 
     function setPlaybackTime(targetTime, varargin)
+        source = '';
+        if ~isempty(varargin)
+            for idx = 1:2:numel(varargin)
+                key = varargin{idx};
+                if strcmpi(key, 'source') && idx + 1 <= numel(varargin)
+                    sourceVal = varargin{idx + 1};
+                    if isstring(sourceVal) || ischar(sourceVal)
+                        source = char(lower(strtrim(string(sourceVal))));
+                    else
+                        source = '';
+                    end
+                    break;
+                end
+            end
+        end
         total = app.Playback.TotalDuration;
         if total <= 0
             targetTime = 0;
@@ -801,6 +818,10 @@ onViewChanged();
             app.Playback.CurrentTime = total;
             moveCursorLines(total);
             updatePlaybackTimeLabel();
+            source = 'timer';
+        end
+        if app.Playback.IsPlaying && ~strcmp(source, 'timer')
+            anchorPlaybackClock();
         end
     end
 
@@ -993,17 +1014,23 @@ onViewChanged();
     end
 
     function startPlaybackTimer()
-        desiredPeriod = max(0.015, min(0.08, app.Playback.TimerPeriod));
+        desiredPeriod = normalizeTimerPeriod(app.Playback.TimerPeriod, 0.005, 0.3);
         if isempty(app.Playback.Timer) || ~isvalid(app.Playback.Timer)
             app.Playback.Timer = timer('ExecutionMode', 'fixedSpacing', ...
                 'Period', desiredPeriod, ...
+                'BusyMode', 'drop', ...
                 'TimerFcn', @(src, evt)onPlaybackTick(src));
         else
             try
                 app.Playback.Timer.Period = desiredPeriod;
             catch
             end
+            try
+                app.Playback.Timer.BusyMode = 'drop';
+            catch
+            end
         end
+        anchorPlaybackClock();
         app.Playback.IsPlaying = true;
         app.Playback.LastTick = tic;
         if strcmp(app.Playback.Timer.Running, 'off')
@@ -1019,24 +1046,61 @@ onViewChanged();
         end
         app.Playback.IsPlaying = false;
         app.Playback.LastTick = [];
+        app.Playback.WallClockStart = [];
+        app.Playback.TimeAtStart = app.Playback.CurrentTime;
         updatePlayButtonText();
+    end
+
+    function anchorPlaybackClock()
+        app.Playback.TimeAtStart = app.Playback.CurrentTime;
+        app.Playback.WallClockStart = tic;
+    end
+
+    function periodOut = normalizeTimerPeriod(periodIn, lowerBound, upperBound)
+        if nargin < 2 || isempty(lowerBound)
+            lowerBound = 0.001;
+        end
+        if nargin < 3 || isempty(upperBound)
+            upperBound = Inf;
+        end
+        periodOut = double(periodIn);
+        if ~isfinite(periodOut) || periodOut <= 0
+            periodOut = lowerBound;
+        end
+        periodOut = max(periodOut, lowerBound);
+        periodOut = min(periodOut, upperBound);
+        periodOut = round(periodOut * 1000) / 1000;
+        if periodOut < 0.001
+            periodOut = 0.001;
+        end
     end
 
     function onPlaybackTick(src)
         if ~app.Playback.IsPlaying || app.Playback.TotalDuration <= 0
             return;
         end
-        period = src.Period;
-        dtTarget = period * max(app.Playback.Speed, 0.05);
-        nowTick = tic;
-        if ~isempty(app.Playback.LastTick)
-            elapsed = toc(app.Playback.LastTick);
-            dt = elapsed * max(app.Playback.Speed, 0.05);
-        else
-            dt = dtTarget;
+        if isempty(app.Playback.WallClockStart)
+            anchorPlaybackClock();
         end
-        app.Playback.LastTick = tic;
-        newTime = app.Playback.CurrentTime + dt;
+        speed = max(app.Playback.Speed, 0.05);
+        elapsed = toc(app.Playback.WallClockStart);
+        newTime = app.Playback.TimeAtStart + elapsed * speed;
+        % Fall back to incremental step if clock drift cannot be measured
+        if ~isfinite(newTime)
+            period = src.Period;
+            newTime = app.Playback.CurrentTime + period * speed;
+        end
+        currentTime = app.Playback.CurrentTime;
+        % Prevent jitter when timer fires faster than the UI can render
+        if newTime < currentTime
+            newTime = currentTime;
+        end
+        % Allow catch-up if callbacks were delayed, but cap extreme jumps
+        nominalStep = src.Period * speed;
+        maxCatchUp = max(0.5, nominalStep * 20);
+        if newTime > currentTime + maxCatchUp
+            newTime = currentTime + maxCatchUp;
+        end
         if newTime >= app.Playback.TotalDuration
             setPlaybackTime(app.Playback.TotalDuration, 'source', 'timer');
             pausePlaybackTimer();
@@ -1049,6 +1113,9 @@ onViewChanged();
         valueStr = app.PlaybackSpeedDropdown.Value;
         speed = parseSpeed(valueStr);
         app.Playback.Speed = speed;
+        if app.Playback.IsPlaying
+            anchorPlaybackClock();
+        end
         updatePlaybackTimeLabel();
     end
 
@@ -1162,7 +1229,7 @@ onViewChanged();
     end
 
     function onCursorLineDragMove(~, ~)
-        if ~app.CursorDrag.Active
+        if ~(app.CursorDrag.Pending || app.CursorDrag.Active)
             return;
         end
         ax = app.CursorDrag.Axis;
@@ -1171,37 +1238,104 @@ onViewChanged();
             return;
         end
         currentTime = resolveAxisTime(ax, [], getLineValue(app.CursorDrag.Line));
+        startTime = app.CursorDrag.StartTime;
+        if ~isfinite(startTime)
+            startTime = currentTime;
+        end
+        pixelDelta = 0;
+        if isgraphics(app.Fig)
+            try
+                currPoint = app.Fig.CurrentPoint;
+                startPoint = app.CursorDrag.StartFigurePoint;
+                if numel(currPoint) >= 2 && numel(startPoint) >= 2
+                    pixelDelta = sqrt(sum((currPoint(1:2) - startPoint(1:2)).^2));
+                end
+            catch
+                pixelDelta = 0;
+            end
+        end
+        if app.CursorDrag.Pending && ~app.CursorDrag.Active
+            delta = abs(currentTime - startTime);
+            if delta >= app.CursorDrag.MinDragDelta && pixelDelta >= app.CursorDrag.PixelThreshold
+                activateCursorDrag();
+            end
+        end
+        if ~app.CursorDrag.Active
+            return;
+        end
         setPlaybackTime(currentTime, 'source', 'cursor');
     end
 
     function onCursorLineDragEnd(~, ~)
-        if ~app.CursorDrag.Active
+        if ~(app.CursorDrag.Active || app.CursorDrag.Pending)
             resetCursorDragState();
             return;
         end
         ax = app.CursorDrag.Axis;
         timeSec = resolveAxisTime(ax, [], getLineValue(app.CursorDrag.Line));
-        setPlaybackTime(timeSec, 'source', 'cursor');
+        if app.CursorDrag.Active
+            setPlaybackTime(timeSec, 'source', 'cursor');
+        else
+            setPlaybackTime(timeSec, 'source', 'click');
+        end
         resetCursorDragState();
     end
 
     function beginDragSession(ax, lineObj, evt)
-        if app.CursorDrag.Active
+        if isempty(lineObj) || ~isgraphics(lineObj)
+            return;
+        end
+        if app.CursorDrag.Active || app.CursorDrag.Pending
             resetCursorDragState();
         end
 
         targetTime = resolveAxisTime(ax, evt, getLineValue(lineObj));
         pausePlaybackTimer();
 
-        app.CursorDrag.Active = true;
+        app.CursorDrag.Pending = true;
+        app.CursorDrag.Active = false;
         app.CursorDrag.Axis = ax;
         app.CursorDrag.Line = lineObj;
+        app.CursorDrag.StartTime = targetTime;
+        app.CursorDrag.PointerChanged = false;
+        app.CursorDrag.StartFigurePoint = [NaN NaN];
+        if isgraphics(app.Fig)
+            try
+                app.CursorDrag.StartFigurePoint = app.Fig.CurrentPoint;
+            catch
+                app.CursorDrag.StartFigurePoint = [NaN NaN];
+            end
+        end
+        minDragDelta = 0.01;
+        timeVec = app.Playback.TimeVector;
+        if ~isempty(timeVec)
+            diffs = diff(timeVec);
+            diffs = diffs(isfinite(diffs) & diffs > 1e-6);
+            if ~isempty(diffs)
+                minDragDelta = max(minDragDelta, min(diffs) / 2);
+            end
+        end
+        frameRate = app.Playback.VideoFrameRate;
+        if isfinite(frameRate) && frameRate > 0
+            frameStep = 1 / frameRate;
+            if isfinite(frameStep) && frameStep > 0
+                minDragDelta = max(minDragDelta, min(frameStep / 2, 0.1));
+            end
+        end
+        minDragDelta = max(minDragDelta, 0.05);
+        minDragDelta = min(minDragDelta, 0.2);
+        app.CursorDrag.MinDragDelta = minDragDelta;
+        pixelThreshold = 6;
+        if isgraphics(app.Fig)
+            figPos = app.Fig.Position;
+            pixelThreshold = max(4, min(12, 0.005 * max(figPos(3:4))));
+        end
+        app.CursorDrag.PixelThreshold = pixelThreshold;
         if isgraphics(app.Fig)
             app.CursorDrag.OriginalMotionFcn = app.Fig.WindowButtonMotionFcn;
             app.CursorDrag.OriginalUpFcn = app.Fig.WindowButtonUpFcn;
             if isprop(app.Fig, 'Pointer')
                 app.CursorDrag.OriginalPointer = app.Fig.Pointer;
-                app.Fig.Pointer = 'hand';
             else
                 app.CursorDrag.OriginalPointer = '';
             end
@@ -1212,13 +1346,31 @@ onViewChanged();
         setPlaybackTime(targetTime, 'source', 'cursor');
     end
 
+    function activateCursorDrag()
+        if app.CursorDrag.Active
+            return;
+        end
+        app.CursorDrag.Pending = false;
+        app.CursorDrag.Active = true;
+        if isgraphics(app.Fig) && isprop(app.Fig, 'Pointer')
+            try
+                app.Fig.Pointer = 'hand';
+                app.CursorDrag.PointerChanged = true;
+            catch
+                app.CursorDrag.PointerChanged = false;
+            end
+        end
+    end
+
     function onStepChanged(~, ~)
         % Placeholder for future interactive behaviour.
     end
 
     function resetCursorDragState()
         if ~isfield(app, 'CursorDrag') || isempty(app.CursorDrag)
-            app.CursorDrag = struct('Active', false, 'Axis', [], 'Line', [], ...
+            app.CursorDrag = struct('Active', false, 'Pending', false, 'Axis', [], 'Line', [], ...
+                'StartTime', NaN, 'StartFigurePoint', [NaN NaN], ...
+                'MinDragDelta', 0.01, 'PixelThreshold', 6, 'PointerChanged', false, ...
                 'OriginalMotionFcn', [], 'OriginalUpFcn', [], 'OriginalPointer', '');
             return;
         end
@@ -1233,7 +1385,7 @@ onViewChanged();
             else
                 app.Fig.WindowButtonUpFcn = [];
             end
-            if isprop(app.Fig, 'Pointer')
+            if isprop(app.Fig, 'Pointer') && app.CursorDrag.PointerChanged
                 if ~isempty(app.CursorDrag.OriginalPointer)
                     app.Fig.Pointer = app.CursorDrag.OriginalPointer;
                 else
@@ -1242,8 +1394,14 @@ onViewChanged();
             end
         end
         app.CursorDrag.Active = false;
+        app.CursorDrag.Pending = false;
         app.CursorDrag.Axis = [];
         app.CursorDrag.Line = [];
+        app.CursorDrag.StartTime = NaN;
+        app.CursorDrag.StartFigurePoint = [NaN NaN];
+        app.CursorDrag.MinDragDelta = 0.01;
+        app.CursorDrag.PixelThreshold = 6;
+        app.CursorDrag.PointerChanged = false;
         app.CursorDrag.OriginalMotionFcn = [];
         app.CursorDrag.OriginalUpFcn = [];
         app.CursorDrag.OriginalPointer = '';
@@ -1966,6 +2124,8 @@ onViewChanged();
             'Timer', [], ...
             'CurrentTime', 0, ...
             'LastTick', [], ...
+            'WallClockStart', [], ...
+            'TimeAtStart', 0, ...
             'InternalUpdate', false, ...
             'TimeVector', [], ...
             'HasError', false, ...
