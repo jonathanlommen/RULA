@@ -18,9 +18,12 @@ function run_all_trials(varargin)
 %           (RULA_Visualizer) after processing completes.
 %       'backupSurgeonDB' (logical, default false) – create a timestamped copy
 %           of Surgeon_db.xlsx before it is modified.
+%       'processVideos'   (logical, default true) – blur reference videos via
+%           videoblur after scoring when figure windows are available.
 
 launchVisualizer = true;
 backupSurgeon = false;
+processVideos = true;
 if ~isempty(varargin)
     if mod(numel(varargin), 2) ~= 0
         error('run_all_trials:InvalidArgs', ...
@@ -34,6 +37,8 @@ if ~isempty(varargin)
                 launchVisualizer = logical(value);
             case "backupsurgeondb"
                 backupSurgeon = logical(value);
+            case "processvideos"
+                processVideos = logical(value);
             otherwise
                 error('run_all_trials:UnknownOption', ...
                     'Unrecognised option "%s".', varargin{argIdx});
@@ -175,6 +180,12 @@ SettingsPath = fullfile(repoRoot, 'Project_settings.mat');
 save(SettingsPath, 'Settings');
 fprintf('Saved run settings snapshot to %s\n', SettingsPath);
 
+videoSummary = processReferenceVideos(repoRoot, processVideos);
+if videoSummary.Ran
+    fprintf('Reference video blur: %d processed, %d skipped existing, %d failed.\n', ...
+        videoSummary.Processed, videoSummary.SkippedExisting, videoSummary.Failed);
+end
+
 fprintf('RULA processing complete for %d trial(s).\n', nTrials);
 
 if launchVisualizer && exist(fullfile(repoRoot, 'RULA_Visualizer.m'), 'file')
@@ -235,6 +246,69 @@ timestamp = datestr(now, 'yyyymmdd_HHMMSS');
 dest = fullfile(repoRoot, ['Surgeon_db_backup_' timestamp '.xlsx']);
 if copyfile(source, dest)
     fprintf('Backed up Surgeon_db.xlsx to %s\n', dest);
+end
+end
+
+function summary = processReferenceVideos(repoRoot, processVideos)
+if nargin < 2
+    processVideos = true;
+end
+summary = struct('Ran', false, 'Processed', 0, 'SkippedExisting', 0, 'Failed', 0);
+if ~processVideos
+    return;
+end
+videoDir = fullfile(repoRoot, 'ReferenceVideos');
+if ~isfolder(videoDir)
+    fprintf('ReferenceVideos directory not found at %s. Skipping video blur.\n', videoDir);
+    return;
+end
+if exist('videoblur', 'file') ~= 2
+    fprintf('videoblur.m not found on the MATLAB path. Skipping reference video processing.\n');
+    return;
+end
+entries = [dir(fullfile(videoDir, '*.mp4')); dir(fullfile(videoDir, '*.MP4'))];
+entries = entries(~[entries.isdir]);
+if isempty(entries)
+    fprintf('No reference videos located under %s.\n', videoDir);
+    return;
+end
+names = lower({entries.name});
+isBlurred = cellfun(@(name) endsWith(name, '_blurred.mp4') || endsWith(name, '-blurred.mp4'), names);
+if all(isBlurred)
+    fprintf('All reference videos already have blurred copies. Skipping videoblur.\n');
+    return;
+end
+if ~hasFigureSupport()
+    warning('run_all_trials:VideoBlurSkippedNoGraphics', ...
+        'Skipping reference video blurring because figure windows are not available in this MATLAB session.');
+    return;
+end
+pendingCount = sum(~isBlurred);
+fprintf('Launching videoblur for %d reference video(s) that still need blurring.\n', pendingCount);
+try
+    blurSummary = videoblur(videoDir);
+    summary.Ran = true;
+    if isfield(blurSummary, 'Processed')
+        summary.Processed = blurSummary.Processed;
+    end
+    if isfield(blurSummary, 'SkippedExisting')
+        summary.SkippedExisting = blurSummary.SkippedExisting;
+    end
+    if isfield(blurSummary, 'Failed')
+        summary.Failed = blurSummary.Failed;
+    end
+catch ME
+    warning('run_all_trials:VideoBlurFailed', ...
+        'videoblur encountered an error: %s', ME.message);
+end
+end
+
+function tf = hasFigureSupport()
+tf = false;
+try
+    tf = usejava('desktop') && feature('ShowFigureWindows');
+catch
+    tf = false;
 end
 end
 

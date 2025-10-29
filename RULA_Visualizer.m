@@ -23,16 +23,18 @@ Settings = loaded.Settings;
 
 subjectIDs = string(ConditionTable.SubjectID);
 trialNames = string(ConditionTable.Filename);
-uniqueSubjects = unique(subjectIDs, 'stable');
+subjectNumbers = arrayfun(@deriveSubjectNumber, subjectIDs, 'UniformOutput', false);
+subjectNumbers = string(subjectNumbers);
+uniqueSubjectNumbers = unique(subjectNumbers, 'stable');
 
-if isempty(uniqueSubjects)
+if isempty(uniqueSubjectNumbers)
     error('RULA_Visualizer:NoTrials', 'No processed trials found in Project_data_v01.mat.');
 end
 
 jointNames = string(Settings.JointNames);
 dimensionNames = string(Settings.Dimensionsjoint);
 jointItems = cellstr(jointNames);
-subjectKeys = cellstr(uniqueSubjects);
+subjectKeys = cellstr(uniqueSubjectNumbers);
 subjectLabels = cellfun(@formatSubjectLabel, subjectKeys, 'UniformOutput', false);
 
 app = struct();
@@ -42,8 +44,9 @@ app.Settings = Settings;
 app.JointNames = jointNames;
 app.DimensionNames = dimensionNames;
 app.SubjectIDs = subjectIDs;
+app.SubjectNumbers = subjectNumbers;
 app.TrialNames = trialNames;
-app.UniqueSubjects = uniqueSubjects;
+app.UniqueSubjects = uniqueSubjectNumbers;
 thresholds = RULA_visualization_thresholds();
 app.Thresholds = thresholds;
 app.StepDefinitions = buildStepDefinitions(Settings);
@@ -227,14 +230,14 @@ onViewChanged();
 
     function onSubjectChanged()
         subjectKey = string(app.SubjectDropdown.Value);
-        matches = (app.SubjectIDs == subjectKey);
+        matches = (app.SubjectNumbers == subjectKey);
         trials = unique(app.TrialNames(matches), 'stable');
         if isempty(trials)
             app.TrialDropdown.Items = {};
             app.TrialDropdown.ItemsData = {};
             app.TrialDropdown.Value = '';
             app.TrialDropdown.Enable = 'off';
-            showMessage(sprintf('No trials located for %s.', formatSubjectLabel(subjectKey)), true);
+            showMessage(sprintf('No trials located for %s.', formatSubjectLabel(char(subjectKey))), true);
             updatePlaybackSource([]);
             refreshPlaybackUI();
             setPlaybackTime(0, 'source', 'subject');
@@ -242,7 +245,11 @@ onViewChanged();
         end
 
         trialKeys = cellstr(trials);
-        trialLabels = cellfun(@formatTrialLabel, trialKeys, 'UniformOutput', false);
+        trialLabels = cell(size(trialKeys));
+        for tkIdx = 1:numel(trialKeys)
+            trialKey = trialKeys{tkIdx};
+            trialLabels{tkIdx} = formatTrialLabel(trialKey);
+        end
         app.TrialDropdown.Items = trialLabels;
         app.TrialDropdown.ItemsData = trialKeys;
         app.TrialDropdown.Value = trialKeys{1};
@@ -275,6 +282,7 @@ onViewChanged();
 
     function onViewChanged()
         viewType = app.ViewDropdown.Value;
+        setViewPanelTitle(viewType);
         if strcmp(viewType, 'Time Series')
             if isvalidControl(app.StepDropdown)
                 app.StepDropdown.Enable = 'on';
@@ -283,6 +291,26 @@ onViewChanged();
             if isvalidControl(app.StepDropdown)
                 app.StepDropdown.Enable = 'off';
             end
+        end
+    end
+
+    function setViewPanelTitle(viewType)
+        if nargin < 1 || isempty(viewType)
+            viewType = app.ViewDropdown.Value;
+        end
+        if isstring(viewType)
+            viewType = char(viewType);
+        end
+        switch viewType
+            case 'Time Series'
+                titleText = 'Time Series';
+            case 'Summary Statistics'
+                titleText = 'Summary Statistics';
+            otherwise
+                titleText = viewType;
+        end
+        if isfield(app, 'TimeSeriesPanel') && isgraphics(app.TimeSeriesPanel)
+            app.TimeSeriesPanel.Title = titleText;
         end
     end
 
@@ -353,7 +381,7 @@ onViewChanged();
 
         maxPlotPoints = 6000;
 
-        app.TimeSeriesPanel.Title = 'Time Series';
+        setViewPanelTitle('Time Series');
         delete(app.TimeSeriesPanel.Children);
         resetCursorDragState();
 
@@ -495,14 +523,15 @@ onViewChanged();
         lowerScore = prctile(scores, 25);
         upperScore = prctile(scores, 75);
 
+        setViewPanelTitle('Summary Statistics');
         delete(app.TimeSeriesPanel.Children);
         app.PlaybackSlider = gobjects(0);
         resetCursorDragState();
-        summaryGrid = uigridlayout(app.TimeSeriesPanel, [2 1], ...
-            'RowHeight', {'2x', '1x'}, ...
-            'ColumnWidth', {'1x'}, ...
+        summaryGrid = uigridlayout(app.TimeSeriesPanel, [1 2], ...
+            'RowHeight', {'1x'}, ...
+            'ColumnWidth', {'1x', '1x'}, ...
             'Padding', [10 10 10 10], ...
-            'RowSpacing', 12);
+            'ColumnSpacing', 12);
 
         finalTogetherFull = reshape(rula.final_score.together, [], 1);
         finalTogetherFull = finalTogetherFull(~isnan(finalTogetherFull));
@@ -510,65 +539,73 @@ onViewChanged();
             error('RULA_Visualizer:NoFinalScores', ...
                 'No final RULA scores are available for %s.', trialName);
         end
-
-        axHist = uiaxes(summaryGrid);
-        axHist.Layout.Row = 1;
-        axHist.Layout.Column = 1;
-        binEdges = 0.5:1:7.5;
         cappedScores = min(finalTogetherFull, 7);
-        counts = histcounts(cappedScores, binEdges);
+
+        scoreLevels = 1:7;
+        counts = arrayfun(@(score) sum(cappedScores == score), scoreLevels);
         totalSamples = sum(counts);
-        relCounts = counts / max(totalSamples, 1) * 100;
-        colorAcceptable = [0.20 0.60 0.20];
-        colorInvestigate = [1.00 0.84 0.00];
-        colorChangeSoon = [0.91 0.45 0.13];
-        colorImmediate = [0.80 0.20 0.20];
-        colors = [
-            colorAcceptable;
-            colorAcceptable;
-            colorInvestigate;
-            colorInvestigate;
-            colorChangeSoon;
-            colorChangeSoon;
-            colorImmediate];
-        bar(axHist, 1:7, relCounts, 'FaceColor', 'flat', ...
-            'CData', colors, 'EdgeColor', 'none');
-        maxPerc = max(relCounts);
-        upperPerc = max(maxPerc * 1.15, 1);
-        hold(axHist, 'on');
-        text(axHist, 1:7, relCounts + upperPerc*0.08, ...
-            arrayfun(@(v)sprintf('%.1f%%', v), relCounts, 'UniformOutput', false), ...
-            'HorizontalAlignment', 'center', 'FontSize', 10);
-        axHist.XTick = 1:7;
-        axHist.XLim = [0.5 7.5];
-        xlabel(axHist, 'RULA Score');
-        ylabel(axHist, 'Relative occurrence (%)');
-        title(axHist, 'Overall RULA Score Distribution');
-        ylim(axHist, [0 upperPerc]);
+        sliceColors = [
+            0.20 0.60 0.20;
+            0.20 0.60 0.20;
+            1.00 0.84 0.00;
+            1.00 0.84 0.00;
+            0.91 0.45 0.13;
+            0.91 0.45 0.13;
+            0.80 0.20 0.20];
 
-        legendEntries = { ...
-            '1-2 Acceptable', colorAcceptable; ...
-            '3-4 Investigate further', colorInvestigate; ...
-            '5-6 Investigate/change soon', colorChangeSoon; ...
-            '7 Immediate action', colorImmediate};
-        legendHandles = gobjects(size(legendEntries,1),1);
-        for idx = 1:size(legendEntries,1)
-            legendHandles(idx) = plot(axHist, NaN, NaN, 's', ...
-                'MarkerFaceColor', legendEntries{idx,2}, ...
-                'MarkerEdgeColor', 'none', 'LineStyle', 'none', 'MarkerSize', 9);
-        end
-        leg = legend(axHist, legendHandles, legendEntries(:,1), ...
-            'Location', 'northoutside', 'Interpreter', 'none', ...
-            'Box', 'on', 'Orientation', 'horizontal');
-        if ~isempty(leg) && isvalid(leg)
-            leg.Title.String = 'Ergonomic Risk';
-            leg.ItemTokenSize = [18 9];
-        end
-        hold(axHist, 'off');
+        axMedian = uiaxes(summaryGrid);
+        axMedian.Layout.Row = 1;
+        axMedian.Layout.Column = 1;
 
-        axBar = uiaxes(summaryGrid);
-        axBar.Layout.Row = 2;
-        axBar.Layout.Column = 1;
+        axPie = uiaxes(summaryGrid);
+        axPie.Layout.Row = 1;
+        axPie.Layout.Column = 2;
+        if totalSamples > 0
+            percentValues = counts / totalSamples * 100;
+            nonZero = counts > 0;
+            pieCounts = counts(nonZero);
+            piePercents = percentValues(nonZero);
+            pieScores = scoreLevels(nonZero);
+            pieHandles = pie(axPie, pieCounts);
+            colorIdx = find(nonZero);
+            colorIdxCounter = 1;
+            for handleIdx = 1:2:numel(pieHandles)
+                patchHandle = pieHandles(handleIdx);
+                if colorIdxCounter <= numel(colorIdx)
+                    patchColor = sliceColors(colorIdx(colorIdxCounter), :);
+                else
+                    patchColor = sliceColors(1, :);
+                end
+                set(patchHandle, 'FaceColor', patchColor);
+                colorIdxCounter = colorIdxCounter + 1;
+            end
+            textHandles = pieHandles(2:2:end);
+            for lblIdx = 1:numel(textHandles)
+                set(textHandles(lblIdx), 'String', '', 'Visible', 'off');
+            end
+            legendLabels = arrayfun(@(score, pct) sprintf('Score %d – %.0f%%', score, pct), ...
+                pieScores, piePercents, 'UniformOutput', false);
+            legendHandle = legend(axPie, legendLabels, 'Location', 'eastoutside', 'Box', 'on');
+            if ~isempty(legendHandle) && isvalid(legendHandle)
+                legendHandle.Interpreter = 'none';
+                legendHandle.Title.String = 'Ergonomic Risk';
+                legendHandle.AutoUpdate = 'off';
+                legendHandle.FontSize = 10;
+            end
+        else
+            pie(axPie, 1, {'No data'});
+            colormap(axPie, sliceColors(1, :));
+            legend(axPie, 'off');
+        end
+        title(axPie, 'Overall RULA Score Distribution');
+        axis(axPie, 'equal');
+        if isprop(axPie, 'Toolbar')
+            axPie.Toolbar.Visible = 'off';
+        end
+        if isprop(axPie, 'Interactions')
+            axPie.Interactions = [];
+        end
+
         subjectLabel = "Unknown";
         if exist('Subject_tmp', 'var') && isfield(Subject_tmp, 'SubjectID') && ~isempty(Subject_tmp.SubjectID)
             subjectLabel = string(Subject_tmp.SubjectID);
@@ -635,16 +672,16 @@ onViewChanged();
         q3 = prctile(cappedScores, 75);
         errLow = medTogether - q1;
         errHigh = q3 - medTogether;
-        bar(axBar, 1, medTogether, 'FaceColor', [0.20 0.45 0.85], 'EdgeColor', 'none');
-        hold(axBar, 'on');
-        errorbar(axBar, 1, medTogether, errLow, errHigh, ...
+        bar(axMedian, 1, medTogether, 'FaceColor', [0.20 0.45 0.85], 'EdgeColor', 'none');
+        hold(axMedian, 'on');
+        errorbar(axMedian, 1, medTogether, errLow, errHigh, ...
             'Color', [0.1 0.3 0.1], 'LineWidth', 1.4, 'CapSize', 12);
-        hold(axBar, 'off');
-        axBar.XTick = 1;
-        axBar.XTickLabel = {xLabelSummary};
-        ylim(axBar, [0 max(7, medTogether + errHigh + 1)]);
-        ylabel(axBar, 'Median score');
-        title(axBar, sprintf('Overall Median RULA Score (IQR %.1f – %.1f)', q1, q3));
+        hold(axMedian, 'off');
+        axMedian.XTick = 1;
+        axMedian.XTickLabel = {xLabelSummary};
+        ylim(axMedian, [0 max(7, medTogether + errHigh + 1)]);
+        ylabel(axMedian, 'Median score');
+        title(axMedian, sprintf('Overall Median RULA Score (IQR %.1f – %.1f)', q1, q3));
 
         app.TimeSeriesAxes = gobjects(0, 1);
         app.CursorLines = gobjects(0, 1);
@@ -660,6 +697,7 @@ onViewChanged();
         app.Playback.VideoPath = '';
         app.Playback.Duration = 0;
         app.Playback.VideoFrameRate = 0;
+        app.Playback.VideoBlurred = false;
         app.Playback.HasError = false;
         resetVideoCache();
 
@@ -746,12 +784,17 @@ onViewChanged();
         app.Playback.VideoPath = videoPath;
         app.Playback.Duration = max(0, reader.Duration);
         app.Playback.VideoFrameRate = reader.FrameRate;
+        app.Playback.VideoBlurred = contains(lower(videoPath), 'blurred');
         desiredPeriod = 1 / max(reader.FrameRate, 1);
         app.Playback.TimerPeriod = normalizeTimerPeriod(desiredPeriod, 0.005, 0.3);
         resetVideoCache();
         app.Playback.CurrentTime = 0;
         updateVideoFrame(0);
-        updateVideoMessage('', false);
+        if app.Playback.VideoBlurred
+            updateVideoMessage('', false);
+        else
+            updateVideoMessage('Unblurred reference video displayed (run videoblur to anonymise).', false);
+        end
     end
 
     function refreshPlaybackUI()
@@ -2130,6 +2173,7 @@ onViewChanged();
             'TimeVector', [], ...
             'HasError', false, ...
             'TimerPeriod', 0.04, ...
+            'VideoBlurred', false, ...
             'VideoCache', emptyVideoCache(), ...
             'VideoLastIndex', NaN, ...
             'VideoLastTime', NaN);
@@ -2274,7 +2318,7 @@ onViewChanged();
     end
 
     function library = buildVideoLibrary(videoDir)
-        library = struct('Keys', {{}}, 'Paths', {{}}, 'MissingFolder', false);
+        library = struct('Keys', {{}}, 'Paths', {{}}, 'Blurred', {[]}, 'MissingFolder', false);
         if nargin < 1 || isempty(videoDir)
             return;
         end
@@ -2288,6 +2332,7 @@ onViewChanged();
         end
         keys = cell(0, 1);
         paths = cell(0, 1);
+        blurredFlags = false(0, 1);
         for idx = 1:numel(entries)
             entry = entries(idx);
             if entry.isdir
@@ -2297,9 +2342,13 @@ onViewChanged();
             if ~ismember(lower(ext), {'.mp4'})
                 continue;
             end
+            lowerName = lower(nameOnly);
+            isBlurredEntry = endsWith(lowerName, '_blurred') || endsWith(lowerName, '-blurred');
             candidateVariants = {nameOnly, ...
                 stripSuffixIgnoreCase(nameOnly, '_processed'), ...
-                stripSuffixIgnoreCase(nameOnly, '-processed')};
+                stripSuffixIgnoreCase(nameOnly, '-processed'), ...
+                stripSuffixIgnoreCase(nameOnly, '_blurred'), ...
+                stripSuffixIgnoreCase(nameOnly, '-blurred')};
             for cvIdx = 1:numel(candidateVariants)
                 candidateVariant = candidateVariants{cvIdx};
                 if isempty(candidateVariant)
@@ -2309,14 +2358,21 @@ onViewChanged();
                 if isempty(key)
                     continue;
                 end
-                if ~any(strcmpi(keys, key))
+                matchIdx = find(strcmpi(keys, key), 1);
+                fullPath = fullfile(entry.folder, entry.name);
+                if isempty(matchIdx)
                     keys{end+1, 1} = key; %#ok<AGROW>
-                    paths{end+1, 1} = fullfile(entry.folder, entry.name); %#ok<AGROW>
+                    paths{end+1, 1} = fullPath; %#ok<AGROW>
+                    blurredFlags(end+1, 1) = isBlurredEntry; %#ok<AGROW>
+                elseif isBlurredEntry && ~blurredFlags(matchIdx)
+                    paths{matchIdx, 1} = fullPath;
+                    blurredFlags(matchIdx, 1) = true;
                 end
             end
         end
         library.Keys = keys;
         library.Paths = paths;
+        library.Blurred = blurredFlags;
     end
 
     function videoPath = findVideoMatch(library, targetKeys)
@@ -2330,8 +2386,41 @@ onViewChanged();
         for tkIdx = 1:numel(targetKeys)
             key = targetKeys{tkIdx};
             idx = find(strcmpi(library.Keys, key), 1);
-            if ~isempty(idx)
-                videoPath = library.Paths{idx};
+            if isempty(idx)
+                continue;
+            end
+            videoPath = library.Paths{idx};
+            if isfield(library, 'Blurred') && numel(library.Blurred) >= idx && ~library.Blurred(idx)
+                candidate = locateBlurredSibling(videoPath);
+                if ~isempty(candidate)
+                    videoPath = candidate;
+                    if isfield(app, 'VideoLibrary') && isfield(app.VideoLibrary, 'Paths') && numel(app.VideoLibrary.Paths) >= idx
+                        app.VideoLibrary.Paths{idx} = candidate;
+                        if ~isfield(app.VideoLibrary, 'Blurred') || numel(app.VideoLibrary.Blurred) < idx
+                            app.VideoLibrary.Blurred(idx) = true;
+                        else
+                            app.VideoLibrary.Blurred(idx) = true;
+                        end
+                    end
+                end
+            end
+            return;
+        end
+    end
+
+    function blurredPath = locateBlurredSibling(originalPath)
+        blurredPath = '';
+        if nargin == 0 || isempty(originalPath)
+            return;
+        end
+        [folder, baseName, ext] = fileparts(originalPath);
+        baseName = stripSuffixIgnoreCase(baseName, '_blurred');
+        baseName = stripSuffixIgnoreCase(baseName, '-blurred');
+        suffixes = {'_blurred', '-blurred'};
+        for sfIdx = 1:numel(suffixes)
+            candidate = fullfile(folder, [baseName suffixes{sfIdx} ext]);
+            if isfile(candidate)
+                blurredPath = candidate;
                 return;
             end
         end
@@ -2351,9 +2440,18 @@ onViewChanged();
         end
         lowered = lower(name);
         cleaned = regexprep(lowered, '[^a-z0-9]', '');
-        lenSuffix = length('processed');
-        if length(cleaned) >= lenSuffix && strcmp(cleaned(end-lenSuffix+1:end), 'processed')
-            cleaned = cleaned(1:end-lenSuffix);
+        suffixes = {'processed', 'blurred'};
+        didStrip = true;
+        while didStrip && ~isempty(cleaned)
+            didStrip = false;
+            for sfIdx = 1:numel(suffixes)
+                suffix = suffixes{sfIdx};
+                lenSuffix = length(suffix);
+                if length(cleaned) >= lenSuffix && strcmp(cleaned(end-lenSuffix+1:end), suffix)
+                    cleaned = cleaned(1:end-lenSuffix);
+                    didStrip = true;
+                end
+            end
         end
         key = cleaned;
     end
@@ -2404,6 +2502,41 @@ onViewChanged();
             rest = '';
         end
         text = [firstChar rest];
+    end
+
+    function key = deriveSubjectNumber(subjectId)
+        if nargin == 0 || isempty(subjectId)
+            key = '';
+            return;
+        end
+        if isstring(subjectId)
+            if ismissing(subjectId)
+                key = '';
+                return;
+            end
+            subjectStr = char(subjectId);
+        else
+            subjectStr = char(subjectId);
+        end
+        subjectStr = strtrim(subjectStr);
+        if isempty(subjectStr)
+            key = '';
+            return;
+        end
+        primary = regexp(subjectStr, '[A-Za-z]*\d+', 'match', 'once');
+        if isempty(primary)
+            digitsOnly = regexp(subjectStr, '\d+', 'match', 'once');
+            if isempty(digitsOnly)
+                key = upper(subjectStr);
+            else
+                key = digitsOnly;
+            end
+        else
+            key = upper(primary);
+        end
+        if isempty(key)
+            key = 'UNKNOWN';
+        end
     end
 
     function label = formatSubjectLabel(subjectKey)
